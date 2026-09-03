@@ -1,0 +1,6 @@
+bin/
+*.csv
+*.xlsx
+!contacts_template.xlsx
+.DS_Store
+.email-verifier-config.json
