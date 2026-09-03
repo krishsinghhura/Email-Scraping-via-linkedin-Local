@@ -69,7 +69,56 @@ func CopyToClipboard(text string) error {
 }
 
 func GetAutoSyncScript(port int) string {
-	return fmt.Sprintf(`(async function(){function g(n){let m=document.cookie.match(new RegExp('(^|; )'+n+'=([^;]+)'));return m?decodeURIComponent(m[2]):'';}try{let r=await fetch('http://127.0.0.1:%d/update-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({li_at:g('li_at'),li_rm:g('li_rm'),jsessionid:g('JSESSIONID'),cookie_header:document.cookie})});let d=await r.json();if(d.success){console.log('%%c[SUCCESS] LinkedIn session synced! Return to your terminal.','color:#22c55e;font-size:16px;font-weight:bold;');alert('[SUCCESS] LinkedIn session synced! You can return to your terminal.');}else{alert('[ERROR] '+(d.message||'Failed to save session.'));}}catch(e){alert('[ERROR] Could not connect to setup server on port %d.');}})();`, port, port)
+	return fmt.Sprintf(`(async function(){function g(n){let m=document.cookie.match(new RegExp('(^|; )'+n+'=([^;]+)'));return m?decodeURIComponent(m[2]):'';}try{let r=await fetch('http://127.0.0.1:%d/update-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({li_at:g('li_at'),li_rm:g('li_rm'),jsessionid:g('JSESSIONID'),cookie_header:document.cookie})});let d=await r.json();if(d.success){console.log('%%c[SUCCESS] LinkedIn session synced! Return to your terminal.','color:#22c55e;font-size:16px;font-weight:bold;');}}catch(e){}})();`, port)
+}
+
+func AutoInjectLinkedInScript(port int) {
+	if runtime.GOOS != "darwin" {
+		OpenBrowser("https://www.linkedin.com/feed/")
+		return
+	}
+
+	browsers := []string{"Brave Browser", "Google Chrome", "Arc", "Microsoft Edge", "Safari"}
+	targetBrowser := ""
+
+	for _, b := range browsers {
+		checkScript := fmt.Sprintf(`tell application "System Events" to (name of processes) contains "%s"`, b)
+		out, err := exec.Command("osascript", "-e", checkScript).Output()
+		if err == nil && strings.TrimSpace(string(out)) == "true" {
+			targetBrowser = b
+			break
+		}
+	}
+
+	if targetBrowser == "" {
+		OpenBrowser("https://www.linkedin.com/feed/")
+		return
+	}
+
+	fmt.Printf("[INFO] Auto-injecting authentication script via %s...\n", targetBrowser)
+
+	script := fmt.Sprintf(`
+		tell application "%s"
+			activate
+			open location "https://www.linkedin.com/feed/"
+		end tell
+		delay 3.5
+		tell application "System Events"
+			tell process "%s"
+				set frontmost to true
+				keystroke "j" using {command down, option down}
+				delay 1.5
+				keystroke "v" using {command down}
+				delay 0.3
+				key code 36
+			end tell
+		end tell
+	`, targetBrowser, targetBrowser)
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		_ = exec.Command("osascript", "-e", script).Run()
+	}()
 }
 
 func StartSetupServer(port int) error {
@@ -143,7 +192,7 @@ func StartSetupServer(port int) error {
 			return
 		}
 
-		fmt.Printf("\n[SUCCESS] Received session credentials from LinkedIn!\n")
+		fmt.Printf("\n[SUCCESS] Automatically captured session credentials from LinkedIn!\n")
 		fmt.Printf("[INFO] Saved configuration to: %s\n", config.GetConfigPath())
 		fmt.Printf("[SUCCESS] Setup complete! You can now run:\n")
 		fmt.Printf("  email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug\n\n")
@@ -228,21 +277,10 @@ func StartSetupServer(port int) error {
 	fmt.Println("==================================================")
 	fmt.Println("           Automated LinkedIn Session Setup       ")
 	fmt.Println("==================================================")
-	fmt.Println("[INFO] Opening https://www.linkedin.com in your default browser...")
-	fmt.Println("[INFO] Auto-sync script has been copied to your clipboard.")
-	fmt.Println("\n--------------------------------------------------")
-	fmt.Println("Quick 1-step sync on the opened LinkedIn tab:")
-	if runtime.GOOS == "darwin" {
-		fmt.Println("1. Press Cmd + Option + J (opens Developer Console)")
-		fmt.Println("2. Press Cmd + V (Paste) and hit Enter")
-	} else {
-		fmt.Println("1. Press Ctrl + Shift + J (opens Developer Console)")
-		fmt.Println("2. Press Ctrl + V (Paste) and hit Enter")
-	}
-	fmt.Println("--------------------------------------------------")
-	fmt.Printf("[INFO] Waiting for session sync from browser (listening on %s)...\n", addr)
+	fmt.Println("[INFO] Opening LinkedIn and capturing session credentials...")
+	fmt.Printf("[INFO] Waiting for automated sync (listening on %s)...\n", addr)
 
-	OpenBrowser("https://www.linkedin.com/feed/")
+	AutoInjectLinkedInScript(port)
 
 	err := srv.ListenAndServe()
 	if err == http.ErrServerClosed {
@@ -448,12 +486,11 @@ const setupHTML = `<!DOCTYPE html>
 <body>
   <div class="card">
     <h1>LinkedIn Session Setup</h1>
-    <p>Automated authentication sync for email-verifier. The script was copied to your clipboard when you ran the setup command.</p>
-
+    <p>Automated authentication sync for email-verifier.</p>
     <div class="box">
       <h3>Automatic Setup:</h3>
-      <p>1. Open LinkedIn in your browser.<br>2. Press <b>Cmd + Option + J</b> (or Ctrl + Shift + J).<br>3. Press <b>Cmd + V</b> (Paste) and hit <b>Enter</b>.</p>
-      <a href="https://www.linkedin.com/feed/" target="_blank" class="btn">Open LinkedIn Now</a>
+      <p>Your session is automatically synchronized when running <code>email-verifier setup</code>.</p>
+      <a href="https://www.linkedin.com/feed/" target="_blank" class="btn">Open LinkedIn</a>
     </div>
   </div>
 </body>

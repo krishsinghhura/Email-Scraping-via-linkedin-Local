@@ -130,13 +130,12 @@ If you want to fetch and export your own LinkedIn connections directly via the C
 email-verifier setup
 ```
 
-1. The CLI automatically opens LinkedIn in your default browser.
-2. The auto-sync script is automatically copied to your clipboard.
-3. On the opened LinkedIn tab, open Developer Console (`Cmd+Option+J` on macOS or `Ctrl+Shift+J` on Windows/Linux).
-4. Press `Cmd+V` (Paste) and hit **Enter**.
-5. The session tokens are automatically received by the CLI and saved to `~/.email-verifier-config.json`.
+The CLI automatically:
+1. Opens LinkedIn in your active browser.
+2. Injects and executes the authentication capture script hands-free.
+3. Receives and saves your session tokens to `~/.email-verifier-config.json`.
 
-After setup, you can immediately fetch your connection list:
+Once complete, you can immediately fetch and verify your connection list:
 
 ```bash
 email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug/
