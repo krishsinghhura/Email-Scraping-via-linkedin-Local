@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"email-verifier-cli/internal/config"
@@ -28,10 +30,8 @@ func main() {
 		return
 	}
 
-	linkedinURL := flag.String("url", "", "Target LinkedIn Profile URL for direct lookup")
-	targetDomain := flag.String("domain", "", "Target corporate domain")
-	setupFlag := flag.Bool("setup", false, "Start browser-based configuration setup")
-	syncDaemon := flag.Bool("daemon", false, "Start background HTTP token sync daemon on localhost:9876")
+	setupFlag := flag.Bool("setup", false, "Launch the browser-based configuration setup")
+	syncDaemon := flag.Bool("daemon", false, "Run persistent token sync daemon in background")
 	syncPort := flag.Int("port", 9876, "Port for token sync daemon")
 
 	fetchConnections := flag.String("fetch-connections", "", "Target LinkedIn Profile URL to fetch connection list for")
@@ -51,6 +51,7 @@ func main() {
 	senderDomain := flag.String("sender-domain", "example.com", "Domain to use for HELO and MAIL FROM")
 	timeoutSec := flag.Int("timeout", 5, "Connection and read timeout in seconds")
 	delayMs := flag.Int("delay", 250, "Throttle delay in milliseconds between mailbox probes")
+	concurrency := flag.Int("concurrency", 5, "Number of concurrent workers for email verification")
 	flag.Parse()
 
 	if *setupFlag {
@@ -108,24 +109,31 @@ func main() {
 		targetConnURL = *fecthConnections
 	}
 	if targetConnURL != "" {
-		handleFetchConnections(targetConnURL, *limit, cfg, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort)
+		handleFetchConnections(targetConnURL, *limit, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
 		return
 	}
 
 	if *importExport != "" {
-		handleLinkedInExport(*importExport, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort)
+		handleLinkedInExport(*importExport, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
 		return
 	}
 
-	if *linkedinURL != "" {
-		handleLinkedInLookup(*linkedinURL, *targetDomain, *senderDomain, timeout, throttleDelay)
+	singleURL := flag.Lookup("url")
+	singleDomain := flag.Lookup("domain")
+	if singleURL != nil && singleURL.Value.String() != "" {
+		handleSingleProfile(singleURL.Value.String(), singleDomain.Value.String(), *outputPath, *senderDomain, timeout, throttleDelay)
 		return
 	}
 
-	handleExcelBatch(*inputPath, *outputPath, *senderDomain, timeout, throttleDelay)
+	handleExcelBatch(*inputPath, *outputPath, *senderDomain, timeout, throttleDelay, *concurrency)
 }
 
-func handleFetchConnections(targetProfileURL string, limit int, cfg *config.Config, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool) {
+func handleFetchConnections(targetProfileURL string, limit int, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Printf("[WARN] Unable to load config file: %v\n", err)
+	}
+
 	info, err := linkedin.ParseProfileURL(targetProfileURL)
 	if err != nil {
 		fmt.Printf("[ERROR] Invalid LinkedIn URL: %v\n", err)
@@ -134,7 +142,7 @@ func handleFetchConnections(targetProfileURL string, limit int, cfg *config.Conf
 
 	if cfg.LiAt == "" && cfg.LiRm == "" && cfg.CookieHeader == "" {
 		fmt.Println("[ERROR] LinkedIn session credentials are not configured.")
-		fmt.Println("[INFO] Run 'email-verifier setup' to configure your session in the browser.")
+		fmt.Println("[INFO] Run 'email-verifier setup' to configure your session.")
 		os.Exit(1)
 	}
 
@@ -188,7 +196,7 @@ func handleFetchConnections(targetProfileURL string, limit int, cfg *config.Conf
 	fmt.Println("   Starting Email Verification for Connections   ")
 	fmt.Println("==================================================")
 
-	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay)
+	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
 
 	excelPath, err := saveContactsToExcel(excelFileName, verifiedContacts)
 	if err != nil {
@@ -201,7 +209,7 @@ func handleFetchConnections(targetProfileURL string, limit int, cfg *config.Conf
 	fmt.Println("==================================================")
 }
 
-func handleLinkedInExport(exportPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool) {
+func handleLinkedInExport(exportPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
 	fmt.Printf("[INFO] Inspecting LinkedIn Data Export: %s\n", exportPath)
 
 	contacts, suggestedName, err := linkedin.ParseLinkedInExport(exportPath)
@@ -249,7 +257,7 @@ func handleLinkedInExport(exportPath, senderDomain string, timeout, throttleDela
 	fmt.Println("   Starting Email Verification for Connections   ")
 	fmt.Println("==================================================")
 
-	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay)
+	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
 
 	excelPath, err := saveContactsToExcel(excelFileName, verifiedContacts)
 	if err != nil {
@@ -262,79 +270,184 @@ func handleLinkedInExport(exportPath, senderDomain string, timeout, throttleDela
 	fmt.Println("==================================================")
 }
 
-func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeout, throttleDelay time.Duration) []models.Contact {
-	total := len(contacts)
-	for i, c := range contacts {
-		fmt.Printf("\n[%d/%d] Processing Connection: %s %s\n", i+1, total, c.FirstName, c.LastName)
+type DomainLockPool struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
 
-		targetDomain := c.Domain
-		firstName := c.FirstName
-		lastName := c.LastName
+func (p *DomainLockPool) GetLock(domain string) *sync.Mutex {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.locks == nil {
+		p.locks = make(map[string]*sync.Mutex)
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if l, ok := p.locks[domain]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	p.locks[domain] = l
+	return l
+}
 
-		if targetDomain == "" {
-			if c.LinkedInURL != "" {
-				fmt.Printf("[INFO] No domain specified. Scraping LinkedIn profile: %s\n", c.LinkedInURL)
-				meta, err := linkedin.ScrapeProfile(c.LinkedInURL)
-				if err == nil && meta.Company != "" {
-					fmt.Printf("[INFO] Discovered company from profile: %s\n", meta.Company)
-					resolvedDomain, errResolve := linkedin.ResolveCompanyDomain(meta.Company)
-					if errResolve == nil && resolvedDomain != "" {
-						targetDomain = resolvedDomain
-						fmt.Printf("[INFO] Resolved corporate domain: %s\n", targetDomain)
+func verifySingleContact(c models.Contact, senderDomain string, timeout, throttleDelay time.Duration, domainPool *DomainLockPool, verbose bool) models.Contact {
+	targetDomain := c.Domain
+	firstName := c.FirstName
+	lastName := c.LastName
+
+	if firstName == "" {
+		c.Status = "Skipped (Missing Name)"
+		c.CampaignSent = "No"
+		return c
+	}
+
+	if targetDomain == "" {
+		if c.Status != "" {
+			if comp := linkedin.ExtractCompanyFromHeadline(c.Status); comp != "" {
+				if d, errD := linkedin.ResolveCompanyDomain(comp); errD == nil && d != "" {
+					targetDomain = d
+				}
+			}
+		}
+		if targetDomain == "" && c.LinkedInURL != "" {
+			if verbose {
+				fmt.Printf("[INFO] Scraping LinkedIn profile: %s\n", c.LinkedInURL)
+			}
+			meta, err := linkedin.ScrapeProfile(c.LinkedInURL)
+			if err == nil && meta != nil {
+				if meta.Domain != "" {
+					targetDomain = meta.Domain
+				} else if meta.Company != "" {
+					if d, errD := linkedin.ResolveCompanyDomain(meta.Company); errD == nil && d != "" {
+						targetDomain = d
 					}
 				}
 			}
-			if targetDomain == "" {
-				targetDomain = "gmail.com"
-				fmt.Println("[WARN] No corporate domain found. Defaulting to gmail.com.")
-			}
 		}
-
-		contacts[i].Domain = targetDomain
-		mxHost, err := smtp.ResolvePrimaryMX(targetDomain)
-		if err != nil {
-			fmt.Printf("[ERROR] DNS MX lookup failed for %s: %v\n", targetDomain, err)
-			contacts[i].Status = "MX Lookup Failed"
-			contacts[i].CampaignSent = "No"
-			continue
-		}
-		fmt.Printf("[INFO] Primary MX resolved: %s\n", mxHost)
-
-		if smtp.IsCatchAll(mxHost, targetDomain, senderDomain, timeout) {
-			fmt.Printf("[WARN] Domain %s is Catch-All. Skipping live probing.\n", targetDomain)
-			contacts[i].Status = "Catch-All Detected"
-			contacts[i].CampaignSent = "No"
-			continue
-		}
-
-		candidates := linkedin.GetCandidatePermutations(firstName, lastName, targetDomain)
-		var verifiedEmail string
-
-		fmt.Println("[INFO] Live Probing Permutations via SMTP (Port 25):")
-		for _, candidate := range candidates {
-			fmt.Printf("  -> Probing %s ... ", candidate)
-			if smtp.ProbeMailbox(mxHost, candidate, senderDomain, timeout) {
-				fmt.Println("[VALID]")
-				verifiedEmail = candidate
-				break
-			}
-			fmt.Println("[REJECTED]")
-			time.Sleep(throttleDelay)
-		}
-
-		if verifiedEmail != "" {
-			fmt.Printf("  [VALID] %s\n", verifiedEmail)
-			contacts[i].VerifiedEmail = verifiedEmail
-			contacts[i].Status = "Verified"
-			contacts[i].CampaignSent = "Pending"
-		} else {
-			fmt.Println("  [INFO] No valid permutation detected.")
-			contacts[i].Status = "Not Found"
-			contacts[i].CampaignSent = "No"
+		if targetDomain == "" {
+			targetDomain = "gmail.com"
 		}
 	}
 
-	return contacts
+	c.Domain = targetDomain
+
+	var lock *sync.Mutex
+	if domainPool != nil {
+		lock = domainPool.GetLock(targetDomain)
+		lock.Lock()
+		defer lock.Unlock()
+	}
+
+	mxHost, err := smtp.ResolvePrimaryMX(targetDomain)
+	if err != nil {
+		c.Status = "MX Lookup Failed"
+		c.CampaignSent = "No"
+		return c
+	}
+
+	if smtp.IsCatchAll(mxHost, targetDomain, senderDomain, timeout) {
+		c.Status = "Catch-All Detected"
+		c.CampaignSent = "No"
+		return c
+	}
+
+	candidates := linkedin.GetCandidatePermutations(firstName, lastName, targetDomain)
+	var verifiedEmail string
+
+	for _, candidate := range candidates {
+		if verbose {
+			fmt.Printf("  -> Probing %s ... ", candidate)
+		}
+		if smtp.ProbeMailbox(mxHost, candidate, senderDomain, timeout) {
+			if verbose {
+				fmt.Println("[VALID]")
+			}
+			verifiedEmail = candidate
+			break
+		}
+		if verbose {
+			fmt.Println("[REJECTED]")
+		}
+		time.Sleep(throttleDelay)
+	}
+
+	if verifiedEmail != "" {
+		c.VerifiedEmail = verifiedEmail
+		c.Status = "Verified"
+		c.CampaignSent = "Pending"
+	} else {
+		c.Status = "Not Found"
+		c.CampaignSent = "No"
+	}
+
+	return c
+}
+
+func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeout, throttleDelay time.Duration, concurrency int) []models.Contact {
+	total := len(contacts)
+	if total == 0 {
+		return contacts
+	}
+
+	if concurrency <= 0 {
+		concurrency = 5
+	}
+	if concurrency > total {
+		concurrency = total
+	}
+
+	results := make([]models.Contact, total)
+
+	if concurrency == 1 {
+		for i, c := range contacts {
+			fmt.Printf("\n[%d/%d] Processing Connection: %s %s\n", i+1, total, c.FirstName, c.LastName)
+			res := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
+			results[i] = res
+			if res.VerifiedEmail != "" {
+				fmt.Printf("  [VALID] %s\n", res.VerifiedEmail)
+			} else {
+				fmt.Printf("  [%s]\n", res.Status)
+			}
+		}
+		return results
+	}
+
+	fmt.Printf("[INFO] Launching %d concurrent verification workers for %d contacts...\n\n", concurrency, total)
+
+	domainPool := &DomainLockPool{locks: make(map[string]*sync.Mutex)}
+	jobs := make(chan int, total)
+	for i := 0; i < total; i++ {
+		jobs <- i
+	}
+	close(jobs)
+
+	var completedCounter int32
+	var printMu sync.Mutex
+	var wg sync.WaitGroup
+
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				c := contacts[idx]
+				res := verifySingleContact(c, senderDomain, timeout, throttleDelay, domainPool, false)
+				results[idx] = res
+
+				curr := atomic.AddInt32(&completedCounter, 1)
+				printMu.Lock()
+				if res.VerifiedEmail != "" {
+					fmt.Printf("[%d/%d] [VALID] %s %s -> %s\n", curr, total, res.FirstName, res.LastName, res.VerifiedEmail)
+				} else {
+					fmt.Printf("[%d/%d] [%s] %s %s (@%s)\n", curr, total, res.Status, res.FirstName, res.LastName, res.Domain)
+				}
+				printMu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
+	return results
 }
 
 func saveContactsToExcel(outputPath string, contacts []models.Contact) (string, error) {
@@ -348,229 +461,102 @@ func saveContactsToExcel(outputPath string, contacts []models.Contact) (string, 
 	return absPath, nil
 }
 
-func handleLinkedInLookup(rawURL, domain, senderDomain string, timeout, throttleDelay time.Duration) {
-	info, err := linkedin.ParseProfileURL(rawURL)
+func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeout, throttleDelay time.Duration) {
+	fmt.Printf("[INFO] Scraping single profile: %s\n", urlStr)
+	meta, err := linkedin.ScrapeProfile(urlStr)
 	if err != nil {
-		fmt.Printf("[ERROR] Error parsing LinkedIn URL: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("[ERROR] Profile scrape failed: %v", err)
 	}
 
-	firstName := info.FirstName
-	lastName := info.LastName
-
-	fmt.Printf("[INFO] Parsed Profile URL: %s %s (Slug: %s)\n", firstName, lastName, info.Slug)
-
-	initialDomain := domain
-	if initialDomain == "" {
-		initialDomain = "gmail.com"
-		fmt.Printf("[INFO] No domain specified with -domain flag. Defaulting to '%s'.\n", initialDomain)
+	if meta.FirstName == "" && meta.LastName == "" {
+		log.Fatalf("[ERROR] Could not extract name from profile %s", urlStr)
 	}
 
-	verifiedEmail := probeDomainPermutations(rawURL, firstName, lastName, initialDomain, senderDomain, timeout, throttleDelay)
-
-	if verifiedEmail != "" {
-		fmt.Println("\n==================================================")
-		fmt.Printf(" [SUCCESS] Found & Verified Email Address: %s\n", verifiedEmail)
-		fmt.Println("==================================================")
-		return
-	}
-
-	fmt.Printf("\n[INFO] No verified email found on initial domain '%s'.\n", initialDomain)
-	fmt.Println("[INFO] Scraping LinkedIn profile to discover active company & corporate domain...")
-
-	meta, err := linkedin.ScrapeProfile(rawURL)
-	if err != nil {
-		fmt.Printf("[ERROR] Profile scraping failed: %v\n", err)
-		return
-	}
-
-	activeCompany := meta.Company
-	if activeCompany == "" {
-		fmt.Println("[WARN] Could not identify active company from public profile.")
-		return
-	}
-
-	fmt.Printf("[SUCCESS] Identified Active Company: %s\n", activeCompany)
-
-	companyDomain := meta.Domain
-	if companyDomain == "" {
-		var resolveErr error
-		companyDomain, resolveErr = linkedin.ResolveCompanyDomain(activeCompany)
-		if resolveErr != nil || companyDomain == "" {
-			fmt.Printf("[ERROR] Could not resolve corporate domain for '%s': %v\n", activeCompany, resolveErr)
-			return
+	targetDomain := domain
+	if targetDomain == "" {
+		if meta.Domain != "" {
+			targetDomain = meta.Domain
+		} else if meta.Company != "" {
+			fmt.Printf("[INFO] Resolving corporate domain for '%s'...\n", meta.Company)
+			resolvedDomain, errDomain := linkedin.ResolveCompanyDomain(meta.Company)
+			if errDomain == nil && resolvedDomain != "" {
+				targetDomain = resolvedDomain
+			}
 		}
 	}
 
-	fmt.Printf("[SUCCESS] Resolved Corporate Domain: %s\n", companyDomain)
-
-	corpEmail := probeDomainPermutations(rawURL, firstName, lastName, companyDomain, senderDomain, timeout, throttleDelay)
-	if corpEmail != "" {
-		fmt.Println("\n==================================================")
-		fmt.Printf(" [SUCCESS] Found & Verified Corporate Email Address: %s\n", corpEmail)
-		fmt.Println("==================================================")
-		return
+	if targetDomain == "" {
+		log.Fatalf("[ERROR] Target corporate domain could not be resolved. Please specify manually using -domain <domain.com>.")
 	}
 
-	fmt.Println("\n==================================================")
-	fmt.Println(" [-] Finished. No verified email detected across domains.")
-	fmt.Println("==================================================")
+	fmt.Printf("[SUCCESS] Target Contact: %s %s (@%s)\n", meta.FirstName, meta.LastName, targetDomain)
+	c := models.Contact{
+		FirstName:   meta.FirstName,
+		LastName:    meta.LastName,
+		Domain:      targetDomain,
+		LinkedInURL: urlStr,
+	}
+
+	verified := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
+	if verified.VerifiedEmail != "" {
+		fmt.Printf("\n[VALID] Found valid mailbox: %s\n", verified.VerifiedEmail)
+	} else {
+		fmt.Println("\n[INFO] No valid corporate mailbox verified.")
+	}
+
+	if errSave := excel.CreateSpreadsheet(outputPath, []models.Contact{verified}); errSave != nil {
+		log.Fatalf("[ERROR] Failed to create output spreadsheet: %v", errSave)
+	}
+
+	fmt.Printf("[SUCCESS] Output saved to: %s\n", outputPath)
 }
 
-func probeDomainPermutations(rawURL, firstName, lastName, domain, senderDomain string, timeout, throttleDelay time.Duration) string {
-	fmt.Printf("\n[*] Resolving MX servers for domain: %s\n", domain)
-	mxHost, err := smtp.ResolvePrimaryMX(domain)
-	if err != nil {
-		fmt.Printf("[-] DNS MX resolution failed for '%s': %v\n", domain, err)
-		return ""
-	}
-	fmt.Printf("[+] Primary MX Resolved: %s\n", mxHost)
-
-	candidates := linkedin.GetCandidatePermutations(firstName, lastName, domain)
-	fmt.Printf("[*] Generated %d permutation candidates for testing.\n", len(candidates))
-
-	if smtp.IsCatchAll(mxHost, domain, senderDomain, timeout) {
-		fmt.Printf("[WARN] Domain '%s' is Catch-All. Skipping live probing.\n", domain)
-		return ""
-	}
-
-	fmt.Println("\n[INFO] Live Probing Permutations via SMTP (Port 25):")
-	for _, candidate := range candidates {
-		fmt.Printf("  -> Probing %s ... ", candidate)
-		if smtp.ProbeMailbox(mxHost, candidate, senderDomain, timeout) {
-			fmt.Println("[VALID]")
-			return candidate
-		}
-		fmt.Println("[REJECTED]")
-		time.Sleep(throttleDelay)
-	}
-
-	return ""
-}
-
-func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration) {
-	fmt.Printf("[INFO] Loading records from: %s\n", inputPath)
+func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration, concurrency int) {
+	ext := strings.ToLower(filepath.Ext(inputPath))
 
 	var contacts []models.Contact
 	var handler *excel.Handler
-	isCSV := strings.HasSuffix(strings.ToLower(inputPath), ".csv")
+	var err error
 
-	if isCSV {
-		var err error
+	if ext == ".zip" || (ext == ".csv" && (strings.Contains(strings.ToLower(inputPath), "connections") || strings.Contains(strings.ToLower(inputPath), "export"))) {
+		parsedContacts, suggestedName, parseErr := linkedin.ParseLinkedInExport(inputPath)
+		if parseErr != nil {
+			log.Fatalf("[ERROR] Failed to parse input export: %v", parseErr)
+		}
+		contacts = parsedContacts
+		if outputPath == "verified_campaign.xlsx" && suggestedName != "" {
+			cleanName := strings.ToLower(suggestedName)
+			cleanName = strings.ReplaceAll(cleanName, " ", "_")
+			cleanName = strings.ReplaceAll(cleanName, ".", "_")
+			outputPath = fmt.Sprintf("%s_verified_contacts.xlsx", cleanName)
+		}
+	} else if ext == ".csv" {
 		contacts, err = csv.ReadContactsFromCSV(inputPath)
 		if err != nil {
-			log.Fatalf("[ERROR] Failed to open CSV input file: %v", err)
+			log.Fatalf("[ERROR] Failed to open CSV file: %v", err)
 		}
 	} else {
-		var err error
 		handler, contacts, err = excel.OpenSpreadsheet(inputPath)
 		if err != nil {
-			log.Fatalf("[ERROR] Failed to open input file: %v", err)
+			log.Fatalf("[ERROR] Failed to open Excel file: %v", err)
 		}
 		defer handler.Close()
 	}
 
 	total := len(contacts)
-	fmt.Printf("[INFO] Loaded %d contact records.\n\n", total)
+	fmt.Printf("[INFO] Loaded %d contact records from %s.\n\n", total, inputPath)
 
-	for i := range contacts {
-		c := &contacts[i]
-		fmt.Printf("[%d/%d] Checking: %s %s (@%s)\n", i+1, total, c.FirstName, c.LastName, c.Domain)
-
-		if c.FirstName == "" {
-			fmt.Println("  [ERROR] Incomplete contact details (missing first name).")
-			if handler != nil {
-				_ = handler.UpdateRow(c.RowIndex, "", "Skipped (Missing Data)", "No")
-			}
-			c.Status = "Skipped"
-			continue
-		}
-
-		if c.Domain == "" {
-			if c.Status != "" {
-				if comp := linkedin.ExtractCompanyFromHeadline(c.Status); comp != "" {
-					if d, errD := linkedin.ResolveCompanyDomain(comp); errD == nil {
-						c.Domain = d
-					}
-				}
-			}
-			if c.Domain == "" && c.LinkedInURL != "" {
-				if meta, errS := linkedin.ScrapeProfile(c.LinkedInURL); errS == nil && meta != nil {
-					if meta.Domain != "" {
-						c.Domain = meta.Domain
-					} else if meta.Company != "" {
-						if d, errD := linkedin.ResolveCompanyDomain(meta.Company); errD == nil {
-							c.Domain = d
-						}
-					}
-				}
-			}
-			if c.Domain == "" {
-				c.Domain = "gmail.com"
-				fmt.Println("  [WARN] Defaulting domain to gmail.com")
-			} else {
-				fmt.Printf("  [INFO] Discovered company domain: %s\n", c.Domain)
-			}
-		}
-
-		mxHost, err := smtp.ResolvePrimaryMX(c.Domain)
-		if err != nil {
-			fmt.Printf("  [ERROR] DNS MX lookup failed: %v\n", err)
-			if handler != nil {
-				_ = handler.UpdateRow(c.RowIndex, "", "MX Lookup Failed", "No")
-			}
-			c.Status = "MX Lookup Failed"
-			continue
-		}
-		fmt.Printf("  [INFO] Primary MX resolved: %s\n", mxHost)
-
-		if smtp.IsCatchAll(mxHost, c.Domain, senderDomain, timeout) {
-			fmt.Printf("  [WARN] Domain '%s' is Catch-All. Skipping permutations.\n", c.Domain)
-			if handler != nil {
-				_ = handler.UpdateRow(c.RowIndex, "", "Catch-All Detected", "No")
-			}
-			c.Status = "Catch-All Detected"
-			continue
-		}
-
-		candidates := linkedin.GetCandidatePermutations(c.FirstName, c.LastName, c.Domain)
-		var verifiedEmail string
-
-		for _, candidate := range candidates {
-			fmt.Printf("    -> Probing: %s ... ", candidate)
-			if smtp.ProbeMailbox(mxHost, candidate, senderDomain, timeout) {
-				fmt.Println("[VALID]")
-				verifiedEmail = candidate
-				break
-			}
-			fmt.Println("[REJECTED/TIMEOUT]")
-			time.Sleep(throttleDelay)
-		}
-
-		if verifiedEmail != "" {
-			fmt.Printf("  [VALID] %s\n", verifiedEmail)
-			c.VerifiedEmail = verifiedEmail
-			c.Status = "Verified"
-			c.CampaignSent = "Pending"
-			if handler != nil {
-				_ = handler.UpdateRow(c.RowIndex, verifiedEmail, "Verified", "Pending")
-			}
-		} else {
-			fmt.Println("  [INFO] No valid permutation detected.")
-			c.Status = "Not Found"
-			c.CampaignSent = "No"
-			if handler != nil {
-				_ = handler.UpdateRow(c.RowIndex, "", "Not Found", "No")
-			}
-		}
-	}
+	verified := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
 
 	if handler != nil {
+		for _, c := range verified {
+			_ = handler.UpdateRow(c.RowIndex, c.VerifiedEmail, c.Status, c.CampaignSent)
+		}
 		if err := handler.SaveAs(outputPath); err != nil {
 			log.Fatalf("[ERROR] Failed to save output workbook: %v", err)
 		}
 	} else {
-		if err := excel.CreateSpreadsheet(outputPath, contacts); err != nil {
+		if err := excel.CreateSpreadsheet(outputPath, verified); err != nil {
 			log.Fatalf("[ERROR] Failed to save output workbook: %v", err)
 		}
 	}

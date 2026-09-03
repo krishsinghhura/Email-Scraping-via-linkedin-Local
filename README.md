@@ -159,6 +159,7 @@ email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug/
 | `-sender-domain` | `example.com` | Domain used in SMTP HELO and MAIL FROM commands |
 | `-timeout` | `5` | Connection and socket read timeout in seconds |
 | `-delay` | `250` | Throttle delay in milliseconds between mailbox probes |
+| `-concurrency` | `5` | Number of concurrent workers for email verification |
 | `-y`, `-yes` | `false` | Auto-confirm prompt to proceed with verification |
 | `-refresh-session` | `false` | Force refresh session `li_at` using stored `li_rm` |
 
