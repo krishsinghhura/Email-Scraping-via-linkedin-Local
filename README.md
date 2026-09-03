@@ -172,7 +172,7 @@ This will:
 | `-output` | `verified_campaign.xlsx` | Path to output Excel file |
 | `-import-export` | `""` | Path to LinkedIn data export `.zip` or `Connections.csv` |
 | `-fetch-connections` | `""` | Profile URL to fetch 1st-degree connections from |
-| `-limit` | `100` | Maximum number of connections or leads to fetch |
+| `-limit` | `0` | Maximum number of connections to fetch (`0` = fetch all connections) |
 | `-sender-domain` | `example.com` | Domain used in SMTP HELO and MAIL FROM commands |
 | `-timeout` | `5` | Connection and socket read timeout in seconds |
 | `-delay` | `250` | Throttle delay in milliseconds between mailbox probes |

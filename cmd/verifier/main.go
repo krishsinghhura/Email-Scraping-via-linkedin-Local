@@ -36,7 +36,7 @@ func main() {
 
 	fetchConnections := flag.String("fetch-connections", "", "Target LinkedIn Profile URL to fetch connection list for")
 	fecthConnections := flag.String("fecth-connections", "", "Alias for -fetch-connections")
-	limit := flag.Int("limit", 100, "Maximum number of connections to fetch")
+	limit := flag.Int("limit", 0, "Maximum number of connections or leads to fetch (default: 0 = fetch all)")
 	liAt := flag.String("li-at", "", "LinkedIn li_at session cookie token")
 	liRm := flag.String("li-rm", "", "LinkedIn li_rm persistent refresh cookie token")
 	jSessionID := flag.String("jsessionid", "", "LinkedIn JSESSIONID cookie value")
@@ -155,7 +155,11 @@ func handleFetchConnections(targetProfileURL string, limit int, senderDomain str
 	apiClient := linkedin.NewAPIClient(cfg.LiAt, cfg.LiRm, cfg.JSessionID, cfg.CookieHeader)
 
 	fmt.Printf("[INFO] Authenticating with LinkedIn API using session cookies...\n")
-	fmt.Printf("[INFO] Fetching connections for profile: %s %s (%s)...\n", info.FirstName, info.LastName, info.URL)
+	if limit > 0 {
+		fmt.Printf("[INFO] Fetching up to %d connections for profile: %s %s (%s)...\n", limit, info.FirstName, info.LastName, info.URL)
+	} else {
+		fmt.Printf("[INFO] Fetching ALL connections for profile: %s %s (%s)...\n", info.FirstName, info.LastName, info.URL)
+	}
 	_, contacts, err := apiClient.FetchProfileConnections(targetProfileURL, limit)
 	if err != nil {
 		fmt.Printf("[ERROR] Failed to fetch connections: %v\n", err)

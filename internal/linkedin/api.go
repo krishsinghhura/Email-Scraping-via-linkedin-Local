@@ -155,8 +155,10 @@ func (c *APIClient) FetchProfileConnections(profileURLOrSlug string, limit int) 
 		return nil, nil, fmt.Errorf("failed to parse profile URL: %w", err)
 	}
 
+	fetchAll := false
 	if limit <= 0 {
-		limit = 1000
+		fetchAll = true
+		limit = 1000000
 	}
 
 	pageSize := 40
@@ -165,7 +167,7 @@ func (c *APIClient) FetchProfileConnections(profileURLOrSlug string, limit int) 
 
 	for start := 0; start < limit; start += pageSize {
 		count := pageSize
-		if start+count > limit {
+		if !fetchAll && start+count > limit {
 			count = limit - start
 		}
 
@@ -174,6 +176,10 @@ func (c *APIClient) FetchProfileConnections(profileURLOrSlug string, limit int) 
 			if len(allContacts) == 0 {
 				return info, nil, err
 			}
+			break
+		}
+
+		if len(pageContacts) == 0 {
 			break
 		}
 
@@ -189,11 +195,16 @@ func (c *APIClient) FetchProfileConnections(profileURLOrSlug string, limit int) 
 				allContacts = append(allContacts, contact)
 				newFound++
 			}
+			if !fetchAll && len(allContacts) >= limit {
+				break
+			}
 		}
 
 		if newFound == 0 {
 			break
 		}
+
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	for i := range allContacts {
