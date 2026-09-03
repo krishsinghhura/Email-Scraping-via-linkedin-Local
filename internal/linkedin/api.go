@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -392,4 +393,138 @@ func extractCompanyFromHeadline(headline string) string {
 		return cleanCompanyName(parts[len(parts)-1])
 	}
 	return ""
+}
+
+func (c *APIClient) SearchLeads(keywords string, limit int) ([]models.Contact, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	var allContacts []models.Contact
+	pageSize := 10
+	if limit < pageSize {
+		pageSize = limit
+	}
+
+	encodedKeywords := url.QueryEscape(keywords)
+	seenURLs := make(map[string]bool)
+
+	for start := 0; start < limit; start += pageSize {
+		fetchCount := pageSize
+		if start+fetchCount > limit {
+			fetchCount = limit - start
+		}
+
+		apiURL := fmt.Sprintf(
+			"https://www.linkedin.com/voyager/api/search/dash/clusters?decorationId=com.linkedin.voyager.dash.deco.search.SearchClusterCollection-175&origin=SWITCH_SEARCH_VERTICAL&q=all&query=(keywords:%s,flagshipSearchIntent:SEARCH_SRP,resultType:List(PEOPLE))&count=%d&start=%d",
+			encodedKeywords, fetchCount, start,
+		)
+
+		req, err := c.newRequest("GET", apiURL)
+		if err != nil {
+			return allContacts, fmt.Errorf("failed to create search request: %w", err)
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return allContacts, fmt.Errorf("search request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return allContacts, fmt.Errorf("search API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var searchResp struct {
+			Elements []struct {
+				Items []struct {
+					ItemUnion struct {
+						EntityResult struct {
+							Title struct {
+								Text string `json:"text"`
+							} `json:"title"`
+							PrimarySubtitle struct {
+								Text string `json:"text"`
+							} `json:"primarySubtitle"`
+							SecondarySubtitle struct {
+								Text string `json:"text"`
+							} `json:"secondarySubtitle"`
+							NavigationURL string `json:"navigationUrl"`
+						} `json:"entityResult"`
+					} `json:"itemUnion"`
+				} `json:"items"`
+			} `json:"elements"`
+		}
+
+		decodeErr := json.NewDecoder(resp.Body).Decode(&searchResp)
+		resp.Body.Close()
+		if decodeErr != nil {
+			return allContacts, fmt.Errorf("failed to decode search response: %w", decodeErr)
+		}
+
+		pageAdded := 0
+		for _, el := range searchResp.Elements {
+			for _, it := range el.Items {
+				res := it.ItemUnion.EntityResult
+				navURL := res.NavigationURL
+				if navURL == "" || !strings.Contains(navURL, "/in/") {
+					continue
+				}
+
+				cleanURL := strings.Split(navURL, "?")[0]
+				if seenURLs[cleanURL] {
+					continue
+				}
+				seenURLs[cleanURL] = true
+
+				fullName := strings.TrimSpace(res.Title.Text)
+				if fullName == "" {
+					continue
+				}
+
+				parts := strings.Fields(fullName)
+				firstName := parts[0]
+				lastName := ""
+				if len(parts) > 1 {
+					lastName = strings.Join(parts[1:], " ")
+				}
+
+				headline := strings.TrimSpace(res.PrimarySubtitle.Text)
+
+				contact := models.Contact{
+					FirstName:   firstName,
+					LastName:    lastName,
+					LinkedInURL: cleanURL,
+					Status:      headline,
+					RowIndex:    len(allContacts) + 2,
+				}
+
+				if headline != "" {
+					if comp := ExtractCompanyFromHeadline(headline); comp != "" {
+						if dom, errDom := ResolveCompanyDomain(comp); errDom == nil && dom != "" {
+							contact.Domain = dom
+						}
+					}
+				}
+
+				allContacts = append(allContacts, contact)
+				pageAdded++
+				if len(allContacts) >= limit {
+					break
+				}
+			}
+			if len(allContacts) >= limit {
+				break
+			}
+		}
+
+		if pageAdded == 0 {
+			break
+		}
+
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	return allContacts, nil
 }

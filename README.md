@@ -144,18 +144,35 @@ email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug/
 
 ---
 
+### 5. Prospecting & Searching Leads by Keyword or Title
+
+Search LinkedIn for prospective leads (by job title, skills, or company) and verify their email addresses:
+
+```bash
+email-verifier -search "VP of Engineering San Francisco" -limit 25 -y
+```
+
+This will:
+1. Search LinkedIn member profiles matching your query.
+2. Auto-resolve the employer's domain.
+3. Save discovered leads to `{query}_leads.csv`.
+4. Concurrently verify permutations and save to `{query}_verified_leads.xlsx`.
+
+---
+
 ## CLI Flags Reference
 
 | Flag | Default | Description |
 |---|---|---|
 | `setup` | `false` | Launch the browser-based configuration setup on `http://localhost:9876/setup` |
+| `-search` | `""` | Search LinkedIn for prospective leads by keyword or title |
 | `-url` | `""` | Target LinkedIn profile URL for single-contact lookup |
 | `-domain` | `""` | Target corporate domain (used with `-url`) |
 | `-input` | `contacts.xlsx` | Path to input Excel (`.xlsx`), CSV (`.csv`), or ZIP export archive |
 | `-output` | `verified_campaign.xlsx` | Path to output Excel file |
 | `-import-export` | `""` | Path to LinkedIn data export `.zip` or `Connections.csv` |
 | `-fetch-connections` | `""` | Profile URL to fetch 1st-degree connections from |
-| `-limit` | `100` | Maximum number of connections to fetch |
+| `-limit` | `100` | Maximum number of connections or leads to fetch |
 | `-sender-domain` | `example.com` | Domain used in SMTP HELO and MAIL FROM commands |
 | `-timeout` | `5` | Connection and socket read timeout in seconds |
 | `-delay` | `250` | Throttle delay in milliseconds between mailbox probes |

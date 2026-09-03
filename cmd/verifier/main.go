@@ -52,6 +52,7 @@ func main() {
 	timeoutSec := flag.Int("timeout", 5, "Connection and read timeout in seconds")
 	delayMs := flag.Int("delay", 250, "Throttle delay in milliseconds between mailbox probes")
 	concurrency := flag.Int("concurrency", 5, "Number of concurrent workers for email verification")
+	searchQuery := flag.String("search", "", "Search LinkedIn for prospective leads by keyword or title")
 	flag.Parse()
 
 	if *setupFlag {
@@ -110,6 +111,11 @@ func main() {
 	}
 	if targetConnURL != "" {
 		handleFetchConnections(targetConnURL, *limit, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
+		return
+	}
+
+	if *searchQuery != "" {
+		handleLinkedInSearch(*searchQuery, *limit, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
 		return
 	}
 
@@ -194,6 +200,82 @@ func handleFetchConnections(targetProfileURL string, limit int, senderDomain str
 
 	fmt.Println("\n==================================================")
 	fmt.Println("   Starting Email Verification for Connections   ")
+	fmt.Println("==================================================")
+
+	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
+
+	excelPath, err := saveContactsToExcel(excelFileName, verifiedContacts)
+	if err != nil {
+		fmt.Printf("[ERROR] Failed to save verified contacts Excel workbook: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n==================================================")
+	fmt.Printf("[SUCCESS] Finished! Verified results saved to Excel: %s\n", excelPath)
+	fmt.Println("==================================================")
+}
+
+func handleLinkedInSearch(keywords string, limit int, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Printf("[WARN] Unable to load config file: %v\n", err)
+	}
+
+	if cfg.LiAt == "" && cfg.LiRm == "" && cfg.CookieHeader == "" {
+		fmt.Println("[ERROR] LinkedIn session credentials are not configured.")
+		fmt.Println("[INFO] Run 'email-verifier setup' to configure your session.")
+		os.Exit(1)
+	}
+
+	apiClient := linkedin.NewAPIClient(cfg.LiAt, cfg.LiRm, cfg.JSessionID, cfg.CookieHeader)
+
+	fmt.Printf("[INFO] Authenticating with LinkedIn API...\n")
+	fmt.Printf("[INFO] Searching LinkedIn for prospective leads: '%s' (limit: %d)...\n", keywords, limit)
+	contacts, err := apiClient.SearchLeads(keywords, limit)
+	if err != nil {
+		fmt.Printf("[ERROR] Failed to search leads: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(contacts) == 0 {
+		fmt.Printf("[WARN] No prospective leads found for '%s'.\n", keywords)
+		return
+	}
+
+	fmt.Printf("[SUCCESS] Successfully discovered %d prospective leads!\n", len(contacts))
+
+	baseSlug := strings.ToLower(keywords)
+	baseSlug = strings.ReplaceAll(baseSlug, " ", "_")
+	baseSlug = strings.ReplaceAll(baseSlug, "/", "_")
+	baseSlug = strings.ReplaceAll(baseSlug, "\"", "")
+	baseSlug = strings.ReplaceAll(baseSlug, "'", "")
+	csvFileName := fmt.Sprintf("%s_leads.csv", baseSlug)
+	excelFileName := fmt.Sprintf("%s_verified_leads.xlsx", baseSlug)
+
+	csvPath, err := csv.SaveConnectionsToCSV(csvFileName, contacts)
+	if err != nil {
+		fmt.Printf("[ERROR] Error saving CSV file: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n[SUCCESS] Saved discovered leads to CSV: %s\n", csvPath)
+
+	if !autoProceed {
+		fmt.Println("\n--------------------------------------------------")
+		fmt.Printf("Do you want to proceed with finding email addresses for all %d leads? (y/N): ", len(contacts))
+
+		reader := bufio.NewReader(os.Stdin)
+		input, _ := reader.ReadString('\n')
+		input = strings.ToLower(strings.TrimSpace(input))
+
+		if input != "y" && input != "yes" {
+			fmt.Println("[INFO] Email verification skipped. You can process the CSV anytime using -input.")
+			return
+		}
+	}
+
+	fmt.Println("\n==================================================")
+	fmt.Println("       Starting Email Verification for Leads      ")
 	fmt.Println("==================================================")
 
 	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
