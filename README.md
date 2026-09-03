@@ -24,20 +24,28 @@ A high-performance command-line tool and email permutation engine built in Go. I
 
 ### Install Globally
 
-Clone this repository and run the install target:
+#### Option 1: 1-Line Quick Install (via curl)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/krishsinghhura/Email-Scraping-via-linkedin-Local/main/install.sh | bash
+```
+
+#### Option 2: Build From Source
+
+Clone this repository and run:
 
 ```bash
 make install
 ```
 
-Or execute the installation script:
+Or run the local installer:
 
 ```bash
 chmod +x ./install.sh
 ./install.sh
 ```
 
-This compiles and installs the binary to both `$(go env GOPATH)/bin` and `/opt/homebrew/bin` (on macOS), making `email-verifier` globally accessible from any terminal window.
+This compiles and installs the binary to both `$(go env GOPATH)/bin` and `/opt/homebrew/bin` (or `/usr/local/bin`), making `email-verifier` globally accessible from any terminal window.
 
 Verify installation:
 
