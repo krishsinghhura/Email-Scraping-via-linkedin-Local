@@ -122,7 +122,7 @@ email-verifier -import-export ~/Downloads/Connections.csv -y
 
 ---
 
-### 4. Automated LinkedIn Session Setup (Only for Exporting Own Connections)
+### 4. Internal LinkedIn Session Setup (Only for Exporting Own Connections)
 
 If you want to fetch and export your own LinkedIn connections directly via the CLI:
 
@@ -130,10 +130,11 @@ If you want to fetch and export your own LinkedIn connections directly via the C
 email-verifier setup
 ```
 
-The CLI automatically:
-1. Opens LinkedIn in your active browser.
-2. Injects and executes the authentication capture script hands-free.
-3. Receives and saves your session tokens to `~/.email-verifier-config.json`.
+The CLI runs **100% internally within your terminal** without opening any browser or developer tools:
+1. Automatically scans your local browser profiles (Brave, Chrome, Arc, Edge).
+2. Reads and decrypts your active LinkedIn session cookies (`li_at`, `JSESSIONID`, `li_rm`).
+3. If macOS prompts for permission to access your browser safe storage in Keychain, click **Always Allow**.
+4. Automatically saves credentials to `~/.email-verifier-config.json`.
 
 Once complete, you can immediately fetch and verify your connection list:
 
