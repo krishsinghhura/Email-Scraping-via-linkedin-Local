@@ -63,7 +63,21 @@ func DecryptChromiumCookie(encryptedHex, password string) (string, error) {
 		decrypted = decrypted[:len(decrypted)-padLen]
 	}
 
-	return string(decrypted), nil
+	startIdx := -1
+	for i, b := range decrypted {
+		if b >= 33 && b <= 126 {
+			startIdx = i
+			break
+		}
+	}
+	if startIdx != -1 {
+		decrypted = decrypted[startIdx:]
+	}
+
+	res := strings.TrimSpace(string(decrypted))
+	res = strings.Trim(res, "\"")
+	res = strings.Trim(res, "'")
+	return strings.TrimSpace(res), nil
 }
 
 func GetKeychainPassword(serviceName, accountName string) (string, error) {
