@@ -338,14 +338,14 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		defer lock.Unlock()
 	}
 
-	mxHost, err := smtp.ResolvePrimaryMX(targetDomain)
-	if err != nil {
+	mxHosts, err := smtp.ResolveMXRecords(targetDomain)
+	if err != nil || len(mxHosts) == 0 {
 		c.Status = "MX Lookup Failed"
 		c.CampaignSent = "No"
 		return c
 	}
 
-	if smtp.IsCatchAll(mxHost, targetDomain, senderDomain, timeout) {
+	if smtp.IsCatchAllMultiMX(mxHosts, targetDomain, senderDomain, timeout) {
 		c.Status = "Catch-All Detected"
 		c.CampaignSent = "No"
 		return c
@@ -358,7 +358,7 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		if verbose {
 			fmt.Printf("  -> Probing %s ... ", candidate)
 		}
-		if smtp.ProbeMailbox(mxHost, candidate, senderDomain, timeout) {
+		if smtp.ProbeMailboxMultiMX(mxHosts, candidate, senderDomain, timeout) {
 			if verbose {
 				fmt.Println("[VALID]")
 			}
