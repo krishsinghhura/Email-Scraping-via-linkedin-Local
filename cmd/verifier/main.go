@@ -425,8 +425,14 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 	}
 
 	targetDomain := c.Domain
-	if targetDomain == "gmail.com" || targetDomain == "outlook.com" {
+	if targetDomain == "gmail.com" || targetDomain == "outlook.com" || len(targetDomain) > 30 {
 		targetDomain = ""
+	}
+
+	if targetDomain != "" {
+		if hosts, err := smtp.ResolveMXRecords(targetDomain); err != nil || len(hosts) == 0 {
+			targetDomain = ""
+		}
 	}
 
 	if targetDomain == "" {

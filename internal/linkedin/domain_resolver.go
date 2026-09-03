@@ -2,12 +2,16 @@ package linkedin
 
 import (
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 
 	"email-verifier-cli/internal/smtp"
 )
+
+func checkDomainMX(domain string) bool {
+	hosts, err := smtp.ResolveMXRecords(domain)
+	return err == nil && len(hosts) > 0
+}
 
 func ResolveCompanyDomain(companyName string) (string, error) {
 	companyName = strings.TrimSpace(companyName)
@@ -15,26 +19,91 @@ func ResolveCompanyDomain(companyName string) (string, error) {
 		return "", fmt.Errorf("empty company name")
 	}
 
-	slug := strings.ToLower(companyName)
-	reNonAlpha := regexp.MustCompile(`[^a-z0-9]+`)
-	cleanSlug := reNonAlpha.ReplaceAllString(slug, "")
+	lower := strings.ToLower(companyName)
 
-	if cleanSlug == "" || len(cleanSlug) > 30 {
-		return "", fmt.Errorf("invalid company slug for '%s'", companyName)
+	if strings.Contains(lower, ".") && !strings.Contains(lower, " ") {
+		clean := strings.Trim(lower, " ./@")
+		if checkDomainMX(clean) {
+			return clean, nil
+		}
 	}
 
-	tlds := []string{".com", ".in", ".io", ".co", ".ai", ".org", ".net"}
-	for _, tld := range tlds {
-		candidateDomain := cleanSlug + tld
-
-		_, errMX := smtp.ResolvePrimaryMX(candidateDomain)
-		if errMX == nil {
-			return candidateDomain, nil
+	cleanupWords := []string{
+		" pvt ltd", " private limited", " ltd", " limited",
+		" inc", " incorporated", " llc", " corp", " corporation",
+		" technologies", " technology", " solutions", " global",
+		" pune", " bhubaneswar", " bangalore", " bengaluru", " mumbai", " delhi", " hyderabad", " chennai", " india",
+	}
+	cleaned := lower
+	for _, w := range cleanupWords {
+		if strings.HasSuffix(cleaned, w) {
+			cleaned = strings.TrimSuffix(cleaned, w)
 		}
+	}
+	cleaned = strings.TrimSpace(cleaned)
 
-		_, errHost := net.LookupHost(candidateDomain)
-		if errHost == nil {
-			return candidateDomain, nil
+	var candidates []string
+
+	if strings.HasSuffix(cleaned, " ai") {
+		base := strings.TrimSpace(strings.TrimSuffix(cleaned, " ai"))
+		reNonAlpha := regexp.MustCompile(`[^a-z0-9]+`)
+		slug := reNonAlpha.ReplaceAllString(base, "")
+		if slug != "" {
+			candidates = append(candidates, slug+".ai")
+		}
+	} else if strings.HasSuffix(cleaned, " io") {
+		base := strings.TrimSpace(strings.TrimSuffix(cleaned, " io"))
+		reNonAlpha := regexp.MustCompile(`[^a-z0-9]+`)
+		slug := reNonAlpha.ReplaceAllString(base, "")
+		if slug != "" {
+			candidates = append(candidates, slug+".io")
+		}
+	}
+
+	reNonAlpha := regexp.MustCompile(`[^a-z0-9]+`)
+	fullSlug := reNonAlpha.ReplaceAllString(cleaned, "")
+	if fullSlug != "" && len(fullSlug) <= 25 {
+		candidates = append(candidates,
+			fullSlug+".com",
+			fullSlug+".ai",
+			fullSlug+".io",
+			fullSlug+".co",
+			fullSlug+".in",
+			fullSlug+".org",
+		)
+	}
+
+	words := strings.Fields(cleaned)
+	if len(words) >= 2 {
+		twoWords := reNonAlpha.ReplaceAllString(words[0]+words[1], "")
+		if len(twoWords) >= 5 && len(twoWords) <= 25 {
+			candidates = append(candidates,
+				twoWords+".com",
+				twoWords+".in",
+			)
+		}
+	}
+	if len(words) > 1 {
+		firstWord := reNonAlpha.ReplaceAllString(words[0], "")
+		if len(firstWord) >= 3 && len(firstWord) <= 20 {
+			candidates = append(candidates,
+				firstWord+".com",
+				firstWord+".ai",
+				firstWord+".io",
+			)
+		}
+	}
+
+	seen := make(map[string]bool)
+	for _, cand := range candidates {
+		cand = strings.TrimSpace(cand)
+		if cand == "" || seen[cand] {
+			continue
+		}
+		seen[cand] = true
+
+		if checkDomainMX(cand) {
+			return cand, nil
 		}
 	}
 

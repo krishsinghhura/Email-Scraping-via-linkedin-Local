@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -396,28 +397,45 @@ func extractCompanyFromHeadline(headline string) string {
 		return ""
 	}
 
-	var comp string
 	lower := strings.ToLower(headline)
+	var comp string
 
-	if idx := strings.Index(lower, " at "); idx != -1 {
-		comp = headline[idx+4:]
-	} else if idx := strings.Index(headline, "@"); idx != -1 {
-		comp = headline[idx+1:]
+	ampIdx := strings.Index(headline, "@")
+	atIdx := strings.Index(lower, " at ")
+
+	if ampIdx != -1 {
+		comp = headline[ampIdx+1:]
+	} else if atIdx != -1 {
+		comp = headline[atIdx+4:]
+	}
+
+	if comp == "" {
+		reLead := regexp.MustCompile(`^(?:[A-Za-z\s/&-]+,\s*)([A-Za-z0-9\s&.-]+?)(?:\s*[|•·—–-]|\s*$)`)
+		if m := reLead.FindStringSubmatch(headline); len(m) > 1 {
+			words := strings.Fields(m[1])
+			if len(words) <= 4 {
+				comp = m[1]
+			}
+		}
 	}
 
 	if comp == "" {
 		return ""
 	}
 
-	delims := []string{"||", "|", "•", "·", " - ", " – ", " — ", ",", ";", "(", "/", "\n"}
+	delims := []string{"||", "|", "•", "·", " - ", " – ", " — ", ",", ";", "(", "/", "\n", " ex-", " ex ", " ex.", " formerly "}
 	for _, d := range delims {
-		if dIdx := strings.Index(comp, d); dIdx != -1 {
+		if dIdx := strings.Index(strings.ToLower(comp), d); dIdx != -1 {
 			comp = comp[:dIdx]
 		}
 	}
 
+	comp = regexp.MustCompile(`(?i)\b(?:by|with|in|for|and)\b.*$`).ReplaceAllString(comp, "")
 	comp = cleanCompanyName(comp)
-	if len(comp) > 35 {
+	comp = strings.Trim(comp, " .,-@|!#")
+
+	words := strings.Fields(comp)
+	if len(words) > 4 || len(comp) > 30 || len(comp) < 2 {
 		return ""
 	}
 	return comp
