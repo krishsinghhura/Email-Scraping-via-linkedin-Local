@@ -165,10 +165,116 @@ email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug/
 
 ## How Email Verification Works
 
-1. **Permutation Generation**: The tool generates 15 standard corporate patterns (e.g., `first.last@domain.com`, `f.last@domain.com`, `first@domain.com`, `lastf@domain.com`).
-2. **DNS MX Resolution**: Identifies the primary mail exchangers for the target domain.
-3. **Catch-All Detection**: Sends a probe for a non-existent randomized address. If accepted, the domain is marked as Catch-All and individual addresses cannot be verified via SMTP.
-4. **Zero-Deliverability Probe**: Initiates an SMTP connection on port 25, sends `HELO`, `MAIL FROM`, and `RCPT TO:<candidate>`, inspects the 250 OK or 550 User Not Found response, and issues `RSET`/`QUIT` without transmitting any email content.
+1. **Permutation Generation**: The tool generates standard corporate email patterns (e.g., `first.last@domain.com`, `f.last@domain.com`, `first@domain.com`, `lastf@domain.com`).
+2. **DNS MX Resolution**: Queries authoritative DNS records to discover primary mail exchangers handling inbound traffic for the domain.
+3. **Catch-All Detection**: Runs a pre-flight probe using a cryptographically randomized, non-existent mailbox.
+4. **Zero-Deliverability SMTP Handshake**: Performs an RFC 5321 handshake on TCP port 25, sends `HELO`, `MAIL FROM`, and `RCPT TO:<candidate>`, inspects response status codes (e.g., `250 OK` vs `550 User Not Found`), and issues `RSET`/`QUIT` without transmitting message body data.
+
+---
+
+## Understanding Catch-All (Accept-All) Domains
+
+A **Catch-All domain** is configured on the mail server to accept all incoming emails, regardless of whether the recipient mailbox actually exists. For example, if a server is set to catch-all, sending an SMTP probe to `random-fake-user-12345@domain.com` will still return `250 OK`.
+
+### Why Catch-All Detection Matters
+If a tool does not detect catch-all configurations, every single generated permutation will falsely appear as valid, leading to low deliverability and bounced campaigns.
+
+### How email-verifier Handles Catch-Alls
+Before checking individual contact permutations:
+1. The verifier sends a probe to a randomized mailbox like `catchall_chk_<hex>@domain.com`.
+2. If the server responds with `250 OK`, the domain is classified as **Catch-All Detected**.
+3. The tool flags the domain and skips further permutation probing to prevent false positive records and protect sender reputation.
+
+---
+
+## Outbound Port 25 Requirements & Troubleshooting
+
+Email verification relies on standard Mail Transfer Agent (MTA) communication, which occurs over **TCP Port 25**. Many residential ISPs and cloud hosting providers block outbound traffic on port 25 by default to prevent unauthorized bulk spam.
+
+### How to Test if Port 25 is Open
+
+Run this check in your terminal or command prompt:
+
+**Linux / macOS:**
+```bash
+nc -zv -w5 aspmx.l.google.com 25
+```
+Or:
+```bash
+telnet aspmx.l.google.com 25
+```
+
+**Windows (PowerShell):**
+```powershell
+Test-NetConnection -ComputerName aspmx.l.google.com -Port 25
+```
+
+If the connection succeeds, outbound port 25 is open. If it times out or is refused, follow the platform instructions below.
+
+---
+
+### How to Open Outbound Port 25
+
+#### 1. Linux (Ubuntu, Debian, CentOS, RHEL)
+
+If blocked by local firewall:
+
+- **UFW (Ubuntu / Debian):**
+  ```bash
+  sudo ufw allow out 25/tcp
+  sudo ufw reload
+  ```
+
+- **Firewalld (CentOS / RHEL / Fedora):**
+  ```bash
+  sudo firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 -p tcp -m tcp --dport 25 -j ACCEPT
+  sudo firewall-cmd --reload
+  ```
+
+- **Iptables:**
+  ```bash
+  sudo iptables -A OUTPUT -p tcp --dport 25 -j ACCEPT
+  ```
+
+If running on a cloud VPS (e.g., AWS EC2, DigitalOcean, GCP, Hetzner, Vultr):
+- Cloud providers block outbound port 25 on new accounts by default.
+- Submit a ticket or request form in your cloud console (e.g., AWS "Request to remove email sending limitations" or DigitalOcean support ticket) requesting outbound port 25 unblocking.
+
+---
+
+#### 2. Windows
+
+If blocked by Windows Defender Firewall:
+
+- **PowerShell (Run as Administrator):**
+  ```powershell
+  New-NetFirewallRule -DisplayName "Allow Outbound SMTP Port 25" -Direction Outbound -LocalPort Any -Protocol TCP -RemotePort 25 -Action Allow
+  ```
+
+- **GUI Method:**
+  1. Open **Windows Defender Firewall with Advanced Security**.
+  2. Click **Outbound Rules** in the left sidebar.
+  3. Click **New Rule...** in the right panel.
+  4. Select **Port** and click Next.
+  5. Choose **TCP** and specify port `25`.
+  6. Select **Allow the connection** and click Next through to completion.
+
+If your residential ISP blocks port 25 on your router:
+- Check your router's administrative firewall settings and ensure outbound port 25 is not filtered.
+- Alternatively, connect through a trusted VPN provider (like Mullvad, ProtonVPN, or a business VPN) or run the tool from a server/VPS that permits outbound port 25 traffic.
+
+---
+
+#### 3. macOS
+
+- **Built-in Firewall:**
+  Check **System Settings > Network > Firewall** to verify outbound connections are allowed, or disable the packet filter temporarily to test:
+  ```bash
+  sudo pfctl -d
+  ```
+
+- **ISP Restrictions:**
+  Most home Wi-Fi networks block outbound port 25. If port 25 is blocked by your ISP, you can run the verifier while connected to a VPN service that allows outbound port 25, or run it from a remote development server.
 
 ---
 
