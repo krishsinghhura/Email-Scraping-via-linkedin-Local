@@ -122,21 +122,21 @@ email-verifier -import-export ~/Downloads/Connections.csv -y
 
 ---
 
-### 4. Interactive Browser Setup (Only for Exporting Own Connections)
+### 4. Automated LinkedIn Session Setup (Only for Exporting Own Connections)
 
-If you want to fetch and export your own LinkedIn connections directly via the CLI, configure your session cookies using the browser setup:
+If you want to fetch and export your own LinkedIn connections directly via the CLI:
 
 ```bash
 email-verifier setup
 ```
 
-This starts a local HTTP server at `http://localhost:9876/setup` and automatically opens your browser.
+1. The CLI automatically opens LinkedIn in your default browser.
+2. The auto-sync script is automatically copied to your clipboard.
+3. On the opened LinkedIn tab, open Developer Console (`Cmd+Option+J` on macOS or `Ctrl+Shift+J` on Windows/Linux).
+4. Press `Cmd+V` (Paste) and hit **Enter**.
+5. The session tokens are automatically received by the CLI and saved to `~/.email-verifier-config.json`.
 
-1. Enter your `li_at` cookie token (and optionally `li_rm` or `JSESSIONID`), or paste your raw Cookie header string.
-2. Click **Save Configuration**.
-3. Once saved to `~/.email-verifier-config.json`, the setup server completes and you can return to the terminal.
-
-After setup, fetch your connection list directly:
+After setup, you can immediately fetch your connection list:
 
 ```bash
 email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug/

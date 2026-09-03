@@ -48,9 +48,35 @@ func OpenBrowser(url string) {
 	_ = cmd.Start()
 }
 
+func CopyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "windows":
+		cmd = exec.Command("clip")
+	default:
+		if _, err := exec.LookPath("xclip"); err == nil {
+			cmd = exec.Command("xclip", "-selection", "clipboard")
+		} else if _, err := exec.LookPath("wl-copy"); err == nil {
+			cmd = exec.Command("wl-copy")
+		} else {
+			return nil
+		}
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
+func GetAutoSyncScript(port int) string {
+	return fmt.Sprintf(`(async function(){function g(n){let m=document.cookie.match(new RegExp('(^|; )'+n+'=([^;]+)'));return m?decodeURIComponent(m[2]):'';}try{let r=await fetch('http://127.0.0.1:%d/update-token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({li_at:g('li_at'),li_rm:g('li_rm'),jsessionid:g('JSESSIONID'),cookie_header:document.cookie})});let d=await r.json();if(d.success){console.log('%%c[SUCCESS] LinkedIn session synced! Return to your terminal.','color:#22c55e;font-size:16px;font-weight:bold;');alert('[SUCCESS] LinkedIn session synced! You can return to your terminal.');}else{alert('[ERROR] '+(d.message||'Failed to save session.'));}}catch(e){alert('[ERROR] Could not connect to setup server on port %d.');}})();`, port, port)
+}
+
 func StartSetupServer(port int) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	setupURL := fmt.Sprintf("http://localhost:%d/setup", port)
+	syncScript := GetAutoSyncScript(port)
+
+	_ = CopyToClipboard(syncScript)
 
 	mux := http.NewServeMux()
 
@@ -117,8 +143,10 @@ func StartSetupServer(port int) error {
 			return
 		}
 
-		fmt.Printf("\n[INFO] Configuration saved to: %s\n", config.GetConfigPath())
-		fmt.Printf("[SUCCESS] Setup complete. You can now return to the terminal.\n\n")
+		fmt.Printf("\n[SUCCESS] Received session credentials from LinkedIn!\n")
+		fmt.Printf("[INFO] Saved configuration to: %s\n", config.GetConfigPath())
+		fmt.Printf("[SUCCESS] Setup complete! You can now run:\n")
+		fmt.Printf("  email-verifier -fetch-connections https://www.linkedin.com/in/your-profile-slug\n\n")
 
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(Response{Success: true, Message: "Configuration saved successfully. Setup complete."})
@@ -197,9 +225,24 @@ func StartSetupServer(port int) error {
 		})
 	})
 
-	fmt.Printf("[INFO] Starting Setup Server at %s\n", setupURL)
-	fmt.Printf("[INFO] Opening default browser...\n")
-	OpenBrowser(setupURL)
+	fmt.Println("==================================================")
+	fmt.Println("           Automated LinkedIn Session Setup       ")
+	fmt.Println("==================================================")
+	fmt.Println("[INFO] Opening https://www.linkedin.com in your default browser...")
+	fmt.Println("[INFO] Auto-sync script has been copied to your clipboard.")
+	fmt.Println("\n--------------------------------------------------")
+	fmt.Println("Quick 1-step sync on the opened LinkedIn tab:")
+	if runtime.GOOS == "darwin" {
+		fmt.Println("1. Press Cmd + Option + J (opens Developer Console)")
+		fmt.Println("2. Press Cmd + V (Paste) and hit Enter")
+	} else {
+		fmt.Println("1. Press Ctrl + Shift + J (opens Developer Console)")
+		fmt.Println("2. Press Ctrl + V (Paste) and hit Enter")
+	}
+	fmt.Println("--------------------------------------------------")
+	fmt.Printf("[INFO] Waiting for session sync from browser (listening on %s)...\n", addr)
+
+	OpenBrowser("https://www.linkedin.com/feed/")
 
 	err := srv.ListenAndServe()
 	if err == http.ErrServerClosed {
@@ -388,99 +431,31 @@ const setupHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Email Verifier - LinkedIn Setup</title>
+  <title>LinkedIn Session Setup</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     body { background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 24px; }
     .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 36px; max-width: 600px; width: 100%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
     h1 { font-size: 22px; margin-bottom: 8px; font-weight: 600; color: #38bdf8; }
     p { font-size: 14px; color: #94a3b8; margin-bottom: 24px; line-height: 1.5; }
-    .field { margin-bottom: 18px; }
-    label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: #cbd5e1; }
-    input[type="text"], textarea { width: 100%; background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 10px 12px; font-size: 14px; color: #f1f5f9; outline: none; }
-    input[type="text"]:focus, textarea:focus { border-color: #38bdf8; }
-    textarea { height: 75px; resize: vertical; font-family: monospace; font-size: 12px; }
-    button { width: 100%; background: #0284c7; color: white; border: none; padding: 12px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; transition: background 0.2s; margin-top: 8px; }
-    button:hover { background: #0369a1; }
-    .snippet-box { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
-    .snippet-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #f8fafc; }
-    .status { margin-top: 16px; font-size: 14px; text-align: center; display: none; }
-    .status.success { color: #4ade80; display: block; }
-    .status.error { color: #f87171; display: block; }
+    .box { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+    .box h3 { font-size: 14px; color: #e2e8f0; margin-bottom: 8px; }
+    .box p { margin-bottom: 12px; font-size: 13px; }
+    .btn { display: inline-block; width: 100%; text-align: center; background: #0284c7; color: white; border: none; padding: 12px; font-size: 15px; font-weight: 600; border-radius: 6px; cursor: pointer; text-decoration: none; }
+    .btn:hover { background: #0369a1; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>LinkedIn Connection Setup</h1>
-    <p>Configure your LinkedIn session cookies to enable direct connection exports and automated verification. This setup is only needed if you want to export your own connections.</p>
-    
-    <div class="field">
-      <label for="li_at">li_at Cookie Token</label>
-      <input type="text" id="li_at" placeholder="AQED...">
-    </div>
+    <h1>LinkedIn Session Setup</h1>
+    <p>Automated authentication sync for email-verifier. The script was copied to your clipboard when you ran the setup command.</p>
 
-    <div class="field">
-      <label for="li_rm">li_rm Persistent Refresh Token (Optional)</label>
-      <input type="text" id="li_rm" placeholder="AQFD...">
+    <div class="box">
+      <h3>Automatic Setup:</h3>
+      <p>1. Open LinkedIn in your browser.<br>2. Press <b>Cmd + Option + J</b> (or Ctrl + Shift + J).<br>3. Press <b>Cmd + V</b> (Paste) and hit <b>Enter</b>.</p>
+      <a href="https://www.linkedin.com/feed/" target="_blank" class="btn">Open LinkedIn Now</a>
     </div>
-
-    <div class="field">
-      <label for="jsessionid">JSESSIONID Cookie Token (Optional)</label>
-      <input type="text" id="jsessionid" placeholder="ajax:...">
-    </div>
-
-    <div class="field">
-      <label for="cookie_header">Or Paste Full Cookie String</label>
-      <textarea id="cookie_header" placeholder="bcookie=...; li_at=...; JSESSIONID=..."></textarea>
-    </div>
-
-    <button id="saveBtn">Save Configuration</button>
-    <div id="status" class="status"></div>
   </div>
-
-  <script>
-    document.getElementById("saveBtn").addEventListener("click", async () => {
-      const liAt = document.getElementById("li_at").value.trim();
-      const liRm = document.getElementById("li_rm").value.trim();
-      const jsessionId = document.getElementById("jsessionid").value.trim();
-      const cookieHeader = document.getElementById("cookie_header").value.trim();
-      const statusEl = document.getElementById("status");
-
-      if (!liAt && !cookieHeader) {
-        statusEl.className = "status error";
-        statusEl.innerText = "Please provide at least li_at or the full Cookie string.";
-        return;
-      }
-
-      statusEl.className = "status";
-      statusEl.innerText = "Saving configuration...";
-      statusEl.style.display = "block";
-
-      try {
-        const resp = await fetch("/update-token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            li_at: liAt,
-            li_rm: liRm,
-            jsessionid: jsessionId,
-            cookie_header: cookieHeader
-          })
-        });
-        const data = await resp.json();
-        if (data.success) {
-          statusEl.className = "status success";
-          statusEl.innerText = "[SUCCESS] Configuration saved. Setup complete! You can return to your terminal.";
-        } else {
-          statusEl.className = "status error";
-          statusEl.innerText = "[ERROR] " + (data.message || "Failed to save.");
-        }
-      } catch (err) {
-        statusEl.className = "status error";
-        statusEl.innerText = "[ERROR] Could not connect to local setup server.";
-      }
-    });
-  </script>
 </body>
 </html>
 `
