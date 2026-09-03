@@ -29,7 +29,17 @@ func SaveConnectionsToCSV(filename string, contacts []models.Contact) (string, e
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	header := []string{"First Name", "Last Name", "Domain", "LinkedIn Profile URL", "Headline", "Verified Email", "Status"}
+	header := []string{
+		"First Name",
+		"Last Name",
+		"Company Domain",
+		"Personal Email",
+		"Work Email",
+		"Verified Email",
+		"Status",
+		"LinkedIn Profile URL",
+		"Headline",
+	}
 	if err := writer.Write(header); err != nil {
 		return "", fmt.Errorf("failed to write CSV header: %w", err)
 	}
@@ -39,10 +49,12 @@ func SaveConnectionsToCSV(filename string, contacts []models.Contact) (string, e
 			c.FirstName,
 			c.LastName,
 			c.Domain,
+			c.PersonalEmail,
+			c.WorkEmail,
+			c.VerifiedEmail,
+			c.Status,
 			c.LinkedInURL,
 			c.Status,
-			c.VerifiedEmail,
-			"Fetched",
 		}
 		if err := writer.Write(row); err != nil {
 			return "", fmt.Errorf("failed to write CSV row: %w", err)
@@ -70,9 +82,14 @@ func ReadContactsFromCSV(filePath string) ([]models.Contact, error) {
 		headerMap[strings.TrimSpace(h)] = i
 	}
 
-	getVal := func(row []string, colName string) string {
-		if idx, ok := headerMap[colName]; ok && idx < len(row) {
-			return strings.TrimSpace(row[idx])
+	getVal := func(row []string, colNames ...string) string {
+		for _, name := range colNames {
+			if idx, ok := headerMap[name]; ok && idx < len(row) {
+				v := strings.TrimSpace(row[idx])
+				if v != "" {
+					return v
+				}
+			}
 		}
 		return ""
 	}
@@ -84,10 +101,12 @@ func ReadContactsFromCSV(filePath string) ([]models.Contact, error) {
 			RowIndex:      idx + 1,
 			FirstName:     getVal(row, "First Name"),
 			LastName:      getVal(row, "Last Name"),
-			Domain:        getVal(row, "Domain"),
-			LinkedInURL:   getVal(row, "LinkedIn Profile URL"),
-			Status:        getVal(row, "Headline"),
+			Domain:        getVal(row, "Company Domain", "Domain"),
+			PersonalEmail: getVal(row, "Personal Email"),
+			WorkEmail:     getVal(row, "Work Email"),
 			VerifiedEmail: getVal(row, "Verified Email"),
+			LinkedInURL:   getVal(row, "LinkedIn Profile URL"),
+			Status:        getVal(row, "Headline", "Status"),
 		})
 	}
 

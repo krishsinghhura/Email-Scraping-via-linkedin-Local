@@ -32,7 +32,7 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 		headerMap[strings.TrimSpace(h)] = i
 	}
 
-	reqCols := []string{"First Name", "Last Name", "Domain", "LinkedIn Profile URL"}
+	reqCols := []string{"First Name", "Last Name"}
 	for _, req := range reqCols {
 		if _, ok := headerMap[req]; !ok {
 			_ = f.Close()
@@ -40,7 +40,7 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 		}
 	}
 
-	outCols := []string{"Verified Email", "Status", "Campaign Sent"}
+	outCols := []string{"Personal Email", "Work Email", "Verified Email", "Status", "Campaign Sent"}
 	for _, col := range outCols {
 		if _, exists := headerMap[col]; !exists {
 			headerMap[col] = len(headerMap)
@@ -52,9 +52,14 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 	var contacts []models.Contact
 	for idx := 1; idx < len(rows); idx++ {
 		row := rows[idx]
-		getVal := func(colName string) string {
-			if cIdx, ok := headerMap[colName]; ok && cIdx < len(row) {
-				return strings.TrimSpace(row[cIdx])
+		getVal := func(colNames ...string) string {
+			for _, colName := range colNames {
+				if cIdx, ok := headerMap[colName]; ok && cIdx < len(row) {
+					v := strings.TrimSpace(row[cIdx])
+					if v != "" {
+						return v
+					}
+				}
 			}
 			return ""
 		}
@@ -63,10 +68,12 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 			RowIndex:      idx + 1,
 			FirstName:     getVal("First Name"),
 			LastName:      getVal("Last Name"),
-			Domain:        getVal("Domain"),
-			LinkedInURL:   getVal("LinkedIn Profile URL"),
+			Domain:        getVal("Company Domain", "Domain"),
+			LinkedInURL:   getVal("LinkedIn Profile URL", "LinkedIn URL"),
+			PersonalEmail: getVal("Personal Email"),
+			WorkEmail:     getVal("Work Email"),
 			VerifiedEmail: getVal("Verified Email"),
-			Status:        getVal("Status"),
+			Status:        getVal("Headline", "Status"),
 			CampaignSent:  getVal("Campaign Sent"),
 		})
 	}
@@ -78,18 +85,28 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 	}, contacts, nil
 }
 
-func (h *Handler) UpdateRow(rowIndex int, email, status, campaignSent string) error {
-	emailCell, _ := excelize.CoordinatesToCellName(h.HeaderMap["Verified Email"]+1, rowIndex)
-	statusCell, _ := excelize.CoordinatesToCellName(h.HeaderMap["Status"]+1, rowIndex)
-	campaignCell, _ := excelize.CoordinatesToCellName(h.HeaderMap["Campaign Sent"]+1, rowIndex)
-
-	if err := h.File.SetCellValue(h.SheetName, emailCell, email); err != nil {
-		return err
+func (h *Handler) UpdateRow(rowIndex int, personalEmail, workEmail, verifiedEmail, status, campaignSent string) error {
+	if idx, ok := h.HeaderMap["Personal Email"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, personalEmail)
 	}
-	if err := h.File.SetCellValue(h.SheetName, statusCell, status); err != nil {
-		return err
+	if idx, ok := h.HeaderMap["Work Email"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, workEmail)
 	}
-	return h.File.SetCellValue(h.SheetName, campaignCell, campaignSent)
+	if idx, ok := h.HeaderMap["Verified Email"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, verifiedEmail)
+	}
+	if idx, ok := h.HeaderMap["Status"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, status)
+	}
+	if idx, ok := h.HeaderMap["Campaign Sent"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, campaignSent)
+	}
+	return nil
 }
 
 func (h *Handler) SaveAs(outputPath string) error {
@@ -101,7 +118,18 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 	defer f.Close()
 
 	sheet := f.GetSheetName(0)
-	headers := []string{"First Name", "Last Name", "Domain", "LinkedIn Profile URL", "Headline", "Verified Email", "Status", "Campaign Sent"}
+	headers := []string{
+		"First Name",
+		"Last Name",
+		"Company Domain",
+		"Personal Email",
+		"Work Email",
+		"Verified Email",
+		"Status",
+		"LinkedIn Profile URL",
+		"Headline",
+		"Campaign Sent",
+	}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		_ = f.SetCellValue(sheet, cell, h)
@@ -109,7 +137,18 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 
 	for idx, c := range contacts {
 		row := idx + 2
-		vals := []string{c.FirstName, c.LastName, c.Domain, c.LinkedInURL, c.Status, c.VerifiedEmail, c.Status, c.CampaignSent}
+		vals := []string{
+			c.FirstName,
+			c.LastName,
+			c.Domain,
+			c.PersonalEmail,
+			c.WorkEmail,
+			c.VerifiedEmail,
+			c.Status,
+			c.LinkedInURL,
+			c.Status,
+			c.CampaignSent,
+		}
 		for col, val := range vals {
 			cell, _ := excelize.CoordinatesToCellName(col+1, row)
 			_ = f.SetCellValue(sheet, cell, val)

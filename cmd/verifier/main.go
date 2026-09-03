@@ -373,7 +373,6 @@ func (p *DomainLockPool) GetLock(domain string) *sync.Mutex {
 }
 
 func verifySingleContact(c models.Contact, senderDomain string, timeout, throttleDelay time.Duration, domainPool *DomainLockPool, verbose bool) models.Contact {
-	targetDomain := c.Domain
 	firstName := c.FirstName
 	lastName := c.LastName
 
@@ -381,6 +380,49 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		c.Status = "Skipped (Missing Name)"
 		c.CampaignSent = "No"
 		return c
+	}
+
+	personalDomains := []string{"gmail.com", "outlook.com"}
+	for _, pDom := range personalDomains {
+		var pLock *sync.Mutex
+		if domainPool != nil {
+			pLock = domainPool.GetLock(pDom)
+			pLock.Lock()
+		}
+
+		pMXHosts, err := smtp.ResolveMXRecords(pDom)
+		if err == nil && len(pMXHosts) > 0 {
+			pCandidates := linkedin.GetCandidatePermutations(firstName, lastName, pDom)
+			for _, cand := range pCandidates {
+				if verbose {
+					fmt.Printf("  -> Probing personal: %s ... ", cand)
+				}
+				if smtp.ProbeMailboxMultiMX(pMXHosts, cand, senderDomain, timeout) {
+					if verbose {
+						fmt.Println("[VALID]")
+					}
+					c.PersonalEmail = cand
+					break
+				}
+				if verbose {
+					fmt.Println("[REJECTED]")
+				}
+				time.Sleep(throttleDelay)
+			}
+		}
+
+		if pLock != nil {
+			pLock.Unlock()
+		}
+
+		if c.PersonalEmail != "" {
+			break
+		}
+	}
+
+	targetDomain := c.Domain
+	if targetDomain == "gmail.com" || targetDomain == "outlook.com" {
+		targetDomain = ""
 	}
 
 	if targetDomain == "" {
@@ -393,7 +435,7 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		}
 		if targetDomain == "" && c.LinkedInURL != "" {
 			if verbose {
-				fmt.Printf("[INFO] Scraping LinkedIn profile: %s\n", c.LinkedInURL)
+				fmt.Printf("[INFO] Scraping LinkedIn profile for company domain: %s\n", c.LinkedInURL)
 			}
 			meta, err := linkedin.ScrapeProfile(c.LinkedInURL)
 			if err == nil && meta != nil {
@@ -406,56 +448,60 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 				}
 			}
 		}
-		if targetDomain == "" {
-			targetDomain = "gmail.com"
-		}
 	}
 
 	c.Domain = targetDomain
 
-	var lock *sync.Mutex
-	if domainPool != nil {
-		lock = domainPool.GetLock(targetDomain)
-		lock.Lock()
-		defer lock.Unlock()
-	}
-
-	mxHosts, err := smtp.ResolveMXRecords(targetDomain)
-	if err != nil || len(mxHosts) == 0 {
-		c.Status = "MX Lookup Failed"
-		c.CampaignSent = "No"
-		return c
-	}
-
-	if smtp.IsCatchAllMultiMX(mxHosts, targetDomain, senderDomain, timeout) {
-		c.Status = "Catch-All Detected"
-		c.CampaignSent = "No"
-		return c
-	}
-
-	candidates := linkedin.GetCandidatePermutations(firstName, lastName, targetDomain)
-	var verifiedEmail string
-
-	for _, candidate := range candidates {
-		if verbose {
-			fmt.Printf("  -> Probing %s ... ", candidate)
+	if targetDomain != "" && targetDomain != "gmail.com" && targetDomain != "outlook.com" {
+		var lock *sync.Mutex
+		if domainPool != nil {
+			lock = domainPool.GetLock(targetDomain)
+			lock.Lock()
 		}
-		if smtp.ProbeMailboxMultiMX(mxHosts, candidate, senderDomain, timeout) {
-			if verbose {
-				fmt.Println("[VALID]")
+
+		mxHosts, err := smtp.ResolveMXRecords(targetDomain)
+		if err == nil && len(mxHosts) > 0 {
+			if !smtp.IsCatchAllMultiMX(mxHosts, targetDomain, senderDomain, timeout) {
+				candidates := linkedin.GetCandidatePermutations(firstName, lastName, targetDomain)
+				for _, candidate := range candidates {
+					if verbose {
+						fmt.Printf("  -> Probing company: %s ... ", candidate)
+					}
+					if smtp.ProbeMailboxMultiMX(mxHosts, candidate, senderDomain, timeout) {
+						if verbose {
+							fmt.Println("[VALID]")
+						}
+						c.WorkEmail = candidate
+						break
+					}
+					if verbose {
+						fmt.Println("[REJECTED]")
+					}
+					time.Sleep(throttleDelay)
+				}
+			} else {
+				if verbose {
+					fmt.Printf("  [WARN] Company domain %s is Catch-All\n", targetDomain)
+				}
 			}
-			verifiedEmail = candidate
-			break
 		}
-		if verbose {
-			fmt.Println("[REJECTED]")
+
+		if lock != nil {
+			lock.Unlock()
 		}
-		time.Sleep(throttleDelay)
 	}
 
-	if verifiedEmail != "" {
-		c.VerifiedEmail = verifiedEmail
-		c.Status = "Verified"
+	if c.PersonalEmail != "" {
+		c.VerifiedEmail = c.PersonalEmail
+		if c.WorkEmail != "" {
+			c.Status = "Verified (Personal + Work)"
+		} else {
+			c.Status = "Verified (Personal)"
+		}
+		c.CampaignSent = "Pending"
+	} else if c.WorkEmail != "" {
+		c.VerifiedEmail = c.WorkEmail
+		c.Status = "Verified (Work)"
 		c.CampaignSent = "Pending"
 	} else {
 		c.Status = "Not Found"
@@ -518,10 +564,14 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 
 				curr := atomic.AddInt32(&completedCounter, 1)
 				printMu.Lock()
-				if res.VerifiedEmail != "" {
-					fmt.Printf("[%d/%d] [VALID] %s %s -> %s\n", curr, total, res.FirstName, res.LastName, res.VerifiedEmail)
+				if res.PersonalEmail != "" && res.WorkEmail != "" {
+					fmt.Printf("[%d/%d] [VALID] %s %s -> Personal: %s | Work: %s\n", curr, total, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail)
+				} else if res.PersonalEmail != "" {
+					fmt.Printf("[%d/%d] [VALID-PERSONAL] %s %s -> %s\n", curr, total, res.FirstName, res.LastName, res.PersonalEmail)
+				} else if res.WorkEmail != "" {
+					fmt.Printf("[%d/%d] [VALID-WORK] %s %s -> %s\n", curr, total, res.FirstName, res.LastName, res.WorkEmail)
 				} else {
-					fmt.Printf("[%d/%d] [%s] %s %s (@%s)\n", curr, total, res.Status, res.FirstName, res.LastName, res.Domain)
+					fmt.Printf("[%d/%d] [%s] %s %s\n", curr, total, res.Status, res.FirstName, res.LastName)
 				}
 				printMu.Unlock()
 			}
@@ -632,7 +682,7 @@ func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throt
 
 	if handler != nil {
 		for _, c := range verified {
-			_ = handler.UpdateRow(c.RowIndex, c.VerifiedEmail, c.Status, c.CampaignSent)
+			_ = handler.UpdateRow(c.RowIndex, c.PersonalEmail, c.WorkEmail, c.VerifiedEmail, c.Status, c.CampaignSent)
 		}
 		if err := handler.SaveAs(outputPath); err != nil {
 			log.Fatalf("[ERROR] Failed to save output workbook: %v", err)

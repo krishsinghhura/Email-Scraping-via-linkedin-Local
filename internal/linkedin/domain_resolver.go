@@ -19,7 +19,7 @@ func ResolveCompanyDomain(companyName string) (string, error) {
 	reNonAlpha := regexp.MustCompile(`[^a-z0-9]+`)
 	cleanSlug := reNonAlpha.ReplaceAllString(slug, "")
 
-	if cleanSlug == "" {
+	if cleanSlug == "" || len(cleanSlug) > 30 {
 		return "", fmt.Errorf("invalid company slug for '%s'", companyName)
 	}
 
@@ -38,5 +38,5 @@ func ResolveCompanyDomain(companyName string) (string, error) {
 		}
 	}
 
-	return cleanSlug + ".com", nil
+	return "", fmt.Errorf("could not resolve domain for %s", companyName)
 }

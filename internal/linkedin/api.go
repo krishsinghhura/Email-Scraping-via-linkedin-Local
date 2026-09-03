@@ -384,15 +384,32 @@ func extractCompanyFromHeadline(headline string) string {
 	if headline == "" {
 		return ""
 	}
-	parts := strings.Split(headline, "@")
-	if len(parts) > 1 {
-		return cleanCompanyName(parts[len(parts)-1])
+
+	var comp string
+	lower := strings.ToLower(headline)
+
+	if idx := strings.Index(lower, " at "); idx != -1 {
+		comp = headline[idx+4:]
+	} else if idx := strings.Index(headline, "@"); idx != -1 {
+		comp = headline[idx+1:]
 	}
-	parts = strings.Split(headline, " at ")
-	if len(parts) > 1 {
-		return cleanCompanyName(parts[len(parts)-1])
+
+	if comp == "" {
+		return ""
 	}
-	return ""
+
+	delims := []string{"||", "|", "•", "·", " - ", " – ", " — ", ",", ";", "(", "/", "\n"}
+	for _, d := range delims {
+		if dIdx := strings.Index(comp, d); dIdx != -1 {
+			comp = comp[:dIdx]
+		}
+	}
+
+	comp = cleanCompanyName(comp)
+	if len(comp) > 35 {
+		return ""
+	}
+	return comp
 }
 
 func (c *APIClient) SearchLeads(keywords string, limit int) ([]models.Contact, error) {

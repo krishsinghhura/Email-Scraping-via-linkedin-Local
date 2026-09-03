@@ -6,6 +6,8 @@ type Contact struct {
 	LastName      string
 	Domain        string
 	LinkedInURL   string
+	PersonalEmail string
+	WorkEmail     string
 	VerifiedEmail string
 	Status        string
 	CampaignSent  string
