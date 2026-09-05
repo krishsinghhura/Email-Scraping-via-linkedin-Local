@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"email-verifier-cli/internal/models"
@@ -36,6 +37,9 @@ func SaveConnectionsToCSV(filename string, contacts []models.Contact) (string, e
 		"Personal Email",
 		"Work Email",
 		"Verified Email",
+		"Deliverability Score",
+		"Confidence Tier",
+		"Verification Reason",
 		"Status",
 		"LinkedIn Profile URL",
 		"Headline",
@@ -45,6 +49,8 @@ func SaveConnectionsToCSV(filename string, contacts []models.Contact) (string, e
 	}
 
 	for _, c := range contacts {
+		scoreStr := fmt.Sprintf("%d%%", c.ConfidenceScore)
+
 		row := []string{
 			c.FirstName,
 			c.LastName,
@@ -52,6 +58,9 @@ func SaveConnectionsToCSV(filename string, contacts []models.Contact) (string, e
 			c.PersonalEmail,
 			c.WorkEmail,
 			c.VerifiedEmail,
+			scoreStr,
+			c.ConfidenceTier,
+			c.VerificationReason,
 			c.Status,
 			c.LinkedInURL,
 			c.Status,
@@ -97,16 +106,28 @@ func ReadContactsFromCSV(filePath string) ([]models.Contact, error) {
 	var contacts []models.Contact
 	for idx := 1; idx < len(records); idx++ {
 		row := records[idx]
+
+		scoreVal := 0
+		if rawScore := getVal(row, "Deliverability Score", "Confidence Score"); rawScore != "" {
+			cleanScore := strings.TrimSuffix(rawScore, "%")
+			if s, err := strconv.Atoi(cleanScore); err == nil {
+				scoreVal = s
+			}
+		}
+
 		contacts = append(contacts, models.Contact{
-			RowIndex:      idx + 1,
-			FirstName:     getVal(row, "First Name"),
-			LastName:      getVal(row, "Last Name"),
-			Domain:        getVal(row, "Company Domain", "Domain"),
-			PersonalEmail: getVal(row, "Personal Email"),
-			WorkEmail:     getVal(row, "Work Email"),
-			VerifiedEmail: getVal(row, "Verified Email"),
-			LinkedInURL:   getVal(row, "LinkedIn Profile URL"),
-			Status:        getVal(row, "Headline", "Status"),
+			RowIndex:           idx + 1,
+			FirstName:          getVal(row, "First Name"),
+			LastName:           getVal(row, "Last Name"),
+			Domain:             getVal(row, "Company Domain", "Domain"),
+			PersonalEmail:      getVal(row, "Personal Email"),
+			WorkEmail:          getVal(row, "Work Email"),
+			VerifiedEmail:      getVal(row, "Verified Email"),
+			ConfidenceScore:    scoreVal,
+			ConfidenceTier:     getVal(row, "Confidence Tier"),
+			VerificationReason: getVal(row, "Verification Reason"),
+			LinkedInURL:        getVal(row, "LinkedIn Profile URL"),
+			Status:             getVal(row, "Headline", "Status"),
 		})
 	}
 

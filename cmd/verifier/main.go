@@ -19,6 +19,7 @@ import (
 	"email-verifier-cli/internal/linkedin"
 	"email-verifier-cli/internal/models"
 	"email-verifier-cli/internal/permutator"
+	"email-verifier-cli/internal/scoring"
 	"email-verifier-cli/internal/server"
 	"email-verifier-cli/internal/smtp"
 )
@@ -385,6 +386,9 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 	if firstName == "" {
 		c.Status = "Skipped (Missing Name)"
 		c.CampaignSent = "No"
+		c.ConfidenceScore = 0
+		c.ConfidenceTier = scoring.TierUndeliverable
+		c.VerificationReason = "Skipped (Missing Name)"
 		return c
 	}
 
@@ -565,6 +569,32 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		c.CampaignSent = "No"
 	}
 
+	patternMatched := false
+	if isCatchAll && targetDomain != "" {
+		_, patternMatched = cache.GetGlobalStore().GetDomainPattern(targetDomain)
+	}
+
+	hasValidMX := targetDomain != "" || c.PersonalEmail != ""
+	if targetDomain != "" {
+		if hosts, err := smtp.ResolveMXRecords(targetDomain); err == nil && len(hosts) > 0 {
+			hasValidMX = true
+		}
+	}
+
+	scoreRes := scoring.EvaluateScore(
+		c.PersonalEmail != "",
+		c.WorkEmail != "",
+		isCatchAll,
+		vrfyConfirmed,
+		patternMatched,
+		hasValidMX,
+		false,
+	)
+
+	c.ConfidenceScore = scoreRes.Score
+	c.ConfidenceTier = scoreRes.Tier
+	c.VerificationReason = scoreRes.Reason
+
 	return c
 }
 
@@ -589,9 +619,9 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 			res := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
 			results[i] = res
 			if res.VerifiedEmail != "" {
-				fmt.Printf("  [VALID] %s\n", res.VerifiedEmail)
+				fmt.Printf("  [%d%% %s] %s (%s)\n", res.ConfidenceScore, res.ConfidenceTier, res.VerifiedEmail, res.VerificationReason)
 			} else {
-				fmt.Printf("  [%s]\n", res.Status)
+				fmt.Printf("  [0%% %s] %s (%s)\n", res.ConfidenceTier, res.Status, res.VerificationReason)
 			}
 		}
 		return results
@@ -621,14 +651,15 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 
 				curr := atomic.AddInt32(&completedCounter, 1)
 				printMu.Lock()
+				badge := fmt.Sprintf("[%d%% %s]", res.ConfidenceScore, res.ConfidenceTier)
 				if res.PersonalEmail != "" && res.WorkEmail != "" {
-					fmt.Printf("[%d/%d] [VALID] %s %s -> Personal: %s | Work: %s\n", curr, total, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail)
+					fmt.Printf("[%d/%d] %s %s %s -> Personal: %s | Work: %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail, res.VerificationReason)
 				} else if res.PersonalEmail != "" {
-					fmt.Printf("[%d/%d] [VALID-PERSONAL] %s %s -> %s\n", curr, total, res.FirstName, res.LastName, res.PersonalEmail)
+					fmt.Printf("[%d/%d] %s %s %s -> %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.PersonalEmail, res.VerificationReason)
 				} else if res.WorkEmail != "" {
-					fmt.Printf("[%d/%d] [VALID-WORK] %s %s -> %s\n", curr, total, res.FirstName, res.LastName, res.WorkEmail)
+					fmt.Printf("[%d/%d] %s %s %s -> %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.WorkEmail, res.VerificationReason)
 				} else {
-					fmt.Printf("[%d/%d] [%s] %s %s\n", curr, total, res.Status, res.FirstName, res.LastName)
+					fmt.Printf("[%d/%d] %s %s %s -> %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.Status, res.VerificationReason)
 				}
 				printMu.Unlock()
 			}
@@ -688,9 +719,9 @@ func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeou
 
 	verified := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
 	if verified.VerifiedEmail != "" {
-		fmt.Printf("\n[VALID] Found valid mailbox: %s\n", verified.VerifiedEmail)
+		fmt.Printf("\n[VALID] Found valid mailbox: %s (Confidence: %d%% - %s)\n", verified.VerifiedEmail, verified.ConfidenceScore, verified.ConfidenceTier)
 	} else {
-		fmt.Println("\n[INFO] No valid corporate mailbox verified.")
+		fmt.Printf("\n[INFO] No valid corporate mailbox verified (%d%% - %s: %s).\n", verified.ConfidenceScore, verified.ConfidenceTier, verified.VerificationReason)
 	}
 
 	if errSave := excel.CreateSpreadsheet(outputPath, []models.Contact{verified}); errSave != nil {
@@ -739,7 +770,7 @@ func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throt
 
 	if handler != nil {
 		for _, c := range verified {
-			_ = handler.UpdateRow(c.RowIndex, c.PersonalEmail, c.WorkEmail, c.VerifiedEmail, c.Status, c.CampaignSent)
+			_ = handler.UpdateContactRow(c)
 		}
 		if err := handler.SaveAs(outputPath); err != nil {
 			log.Fatalf("[ERROR] Failed to save output workbook: %v", err)

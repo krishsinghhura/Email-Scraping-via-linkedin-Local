@@ -2,6 +2,7 @@ package excel
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"email-verifier-cli/internal/models"
@@ -40,7 +41,11 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 		}
 	}
 
-	outCols := []string{"Personal Email", "Work Email", "Verified Email", "Status", "Campaign Sent"}
+	outCols := []string{
+		"Personal Email", "Work Email", "Verified Email",
+		"Deliverability Score", "Confidence Tier", "Verification Reason",
+		"Status", "Campaign Sent",
+	}
 	for _, col := range outCols {
 		if _, exists := headerMap[col]; !exists {
 			headerMap[col] = len(headerMap)
@@ -64,17 +69,28 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 			return ""
 		}
 
+		scoreVal := 0
+		if rawScore := getVal("Deliverability Score", "Confidence Score"); rawScore != "" {
+			cleanScore := strings.TrimSuffix(rawScore, "%")
+			if s, err := strconv.Atoi(cleanScore); err == nil {
+				scoreVal = s
+			}
+		}
+
 		contacts = append(contacts, models.Contact{
-			RowIndex:      idx + 1,
-			FirstName:     getVal("First Name"),
-			LastName:      getVal("Last Name"),
-			Domain:        getVal("Company Domain", "Domain"),
-			LinkedInURL:   getVal("LinkedIn Profile URL", "LinkedIn URL"),
-			PersonalEmail: getVal("Personal Email"),
-			WorkEmail:     getVal("Work Email"),
-			VerifiedEmail: getVal("Verified Email"),
-			Status:        getVal("Headline", "Status"),
-			CampaignSent:  getVal("Campaign Sent"),
+			RowIndex:           idx + 1,
+			FirstName:          getVal("First Name"),
+			LastName:           getVal("Last Name"),
+			Domain:             getVal("Company Domain", "Domain"),
+			LinkedInURL:        getVal("LinkedIn Profile URL", "LinkedIn URL"),
+			PersonalEmail:      getVal("Personal Email"),
+			WorkEmail:          getVal("Work Email"),
+			VerifiedEmail:      getVal("Verified Email"),
+			ConfidenceScore:    scoreVal,
+			ConfidenceTier:     getVal("Confidence Tier"),
+			VerificationReason: getVal("Verification Reason"),
+			Status:             getVal("Headline", "Status"),
+			CampaignSent:       getVal("Campaign Sent"),
 		})
 	}
 
@@ -85,28 +101,53 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 	}, contacts, nil
 }
 
-func (h *Handler) UpdateRow(rowIndex int, personalEmail, workEmail, verifiedEmail, status, campaignSent string) error {
+func (h *Handler) UpdateContactRow(c models.Contact) error {
+	scoreStr := fmt.Sprintf("%d%%", c.ConfidenceScore)
+
 	if idx, ok := h.HeaderMap["Personal Email"]; ok {
-		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
-		_ = h.File.SetCellValue(h.SheetName, cell, personalEmail)
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.PersonalEmail)
 	}
 	if idx, ok := h.HeaderMap["Work Email"]; ok {
-		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
-		_ = h.File.SetCellValue(h.SheetName, cell, workEmail)
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.WorkEmail)
 	}
 	if idx, ok := h.HeaderMap["Verified Email"]; ok {
-		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
-		_ = h.File.SetCellValue(h.SheetName, cell, verifiedEmail)
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.VerifiedEmail)
+	}
+	if idx, ok := h.HeaderMap["Deliverability Score"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, scoreStr)
+	}
+	if idx, ok := h.HeaderMap["Confidence Tier"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.ConfidenceTier)
+	}
+	if idx, ok := h.HeaderMap["Verification Reason"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.VerificationReason)
 	}
 	if idx, ok := h.HeaderMap["Status"]; ok {
-		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
-		_ = h.File.SetCellValue(h.SheetName, cell, status)
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.Status)
 	}
 	if idx, ok := h.HeaderMap["Campaign Sent"]; ok {
-		cell, _ := excelize.CoordinatesToCellName(idx+1, rowIndex)
-		_ = h.File.SetCellValue(h.SheetName, cell, campaignSent)
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.CampaignSent)
 	}
 	return nil
+}
+
+func (h *Handler) UpdateRow(rowIndex int, personalEmail, workEmail, verifiedEmail, status, campaignSent string) error {
+	return h.UpdateContactRow(models.Contact{
+		RowIndex:      rowIndex,
+		PersonalEmail: personalEmail,
+		WorkEmail:     workEmail,
+		VerifiedEmail: verifiedEmail,
+		Status:        status,
+		CampaignSent:  campaignSent,
+	})
 }
 
 func (h *Handler) SaveAs(outputPath string) error {
@@ -125,6 +166,9 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 		"Personal Email",
 		"Work Email",
 		"Verified Email",
+		"Deliverability Score",
+		"Confidence Tier",
+		"Verification Reason",
 		"Status",
 		"LinkedIn Profile URL",
 		"Headline",
@@ -137,6 +181,8 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 
 	for idx, c := range contacts {
 		row := idx + 2
+		scoreStr := fmt.Sprintf("%d%%", c.ConfidenceScore)
+
 		vals := []string{
 			c.FirstName,
 			c.LastName,
@@ -144,6 +190,9 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 			c.PersonalEmail,
 			c.WorkEmail,
 			c.VerifiedEmail,
+			scoreStr,
+			c.ConfidenceTier,
+			c.VerificationReason,
 			c.Status,
 			c.LinkedInURL,
 			c.Status,
