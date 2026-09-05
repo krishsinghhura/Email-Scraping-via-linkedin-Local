@@ -12,11 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"email-verifier-cli/internal/cache"
 	"email-verifier-cli/internal/config"
 	"email-verifier-cli/internal/csv"
 	"email-verifier-cli/internal/excel"
 	"email-verifier-cli/internal/linkedin"
 	"email-verifier-cli/internal/models"
+	"email-verifier-cli/internal/permutator"
 	"email-verifier-cli/internal/server"
 	"email-verifier-cli/internal/smtp"
 )
@@ -462,6 +464,9 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 
 	c.Domain = targetDomain
 
+	isCatchAll := false
+	vrfyConfirmed := false
+
 	if targetDomain != "" && targetDomain != "gmail.com" && targetDomain != "outlook.com" {
 		var lock *sync.Mutex
 		if domainPool != nil {
@@ -482,6 +487,9 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 							fmt.Println("[VALID]")
 						}
 						c.WorkEmail = candidate
+						// Store successful pattern in persistent memory
+						pat := permutator.DetectPattern(candidate, firstName, lastName)
+						cache.GetGlobalStore().SetDomainPattern(targetDomain, pat)
 						break
 					}
 					if verbose {
@@ -490,9 +498,32 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 					time.Sleep(throttleDelay)
 				}
 			} else {
+				isCatchAll = true
 				if verbose {
-					fmt.Printf("  [WARN] Company domain %s is Catch-All\n", targetDomain)
+					fmt.Printf("  [WARN] Company domain %s is Catch-All (Applying Accept-All Strategy)...\n", targetDomain)
 				}
+
+				// 1. Check if domain pattern is cached
+				var chosenCandidate string
+				cachedPat, hasPat := cache.GetGlobalStore().GetDomainPattern(targetDomain)
+				if hasPat && cachedPat != "" {
+					chosenCandidate = permutator.FormatPattern(cachedPat, firstName, lastName, targetDomain)
+				} else {
+					chosenCandidate = permutator.GetMostLikelyCandidate(firstName, lastName, targetDomain)
+				}
+
+				// 2. Check VRFY probe if supported
+				if len(mxHosts) > 0 {
+					vrfyValid, vrfySupported := smtp.ProbeVRFY(mxHosts[0], chosenCandidate, senderDomain, timeout)
+					if vrfySupported && vrfyValid {
+						vrfyConfirmed = true
+						if verbose {
+							fmt.Printf("  [VRFY-CONFIRMED] %s\n", chosenCandidate)
+						}
+					}
+				}
+
+				c.WorkEmail = chosenCandidate
 			}
 		}
 
@@ -504,14 +535,30 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 	if c.PersonalEmail != "" {
 		c.VerifiedEmail = c.PersonalEmail
 		if c.WorkEmail != "" {
-			c.Status = "Verified (Personal + Work)"
+			if isCatchAll {
+				if vrfyConfirmed {
+					c.Status = "Verified (Personal) + Work (VRFY Confirmed)"
+				} else {
+					c.Status = "Verified (Personal) + Work (Catch-All)"
+				}
+			} else {
+				c.Status = "Verified (Personal + Work)"
+			}
 		} else {
 			c.Status = "Verified (Personal)"
 		}
 		c.CampaignSent = "Pending"
 	} else if c.WorkEmail != "" {
 		c.VerifiedEmail = c.WorkEmail
-		c.Status = "Verified (Work)"
+		if isCatchAll {
+			if vrfyConfirmed {
+				c.Status = "Verified (Work - VRFY Confirmed)"
+			} else {
+				c.Status = "Catch-All (High Confidence)"
+			}
+		} else {
+			c.Status = "Verified (Work)"
+		}
 		c.CampaignSent = "Pending"
 	} else {
 		c.Status = "Not Found"

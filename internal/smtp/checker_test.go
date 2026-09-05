@@ -3,6 +3,7 @@ package smtp
 import (
 	"errors"
 	"net/textproto"
+	"strings"
 	"testing"
 )
 
@@ -48,3 +49,16 @@ func TestClassifySMTPError(t *testing.T) {
 		t.Errorf("expected temporary error for network error, got %+v", resNet)
 	}
 }
+
+func TestRandomMailboxGeneration(t *testing.T) {
+	mb1 := GenerateRandomMailbox("example.com")
+	mb2 := GenerateSecondaryRandomMailbox("example.com")
+
+	if mb1 == mb2 {
+		t.Errorf("expected different random mailboxes, got %s and %s", mb1, mb2)
+	}
+	if !strings.HasSuffix(mb1, "@example.com") || !strings.HasSuffix(mb2, "@example.com") {
+		t.Errorf("expected @example.com suffix, got %s, %s", mb1, mb2)
+	}
+}
+

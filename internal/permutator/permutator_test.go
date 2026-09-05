@@ -40,3 +40,30 @@ func TestGeneratePermutations(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectAndFormatPattern(t *testing.T) {
+	tests := []struct {
+		email     string
+		firstName string
+		lastName  string
+		expected  string
+	}{
+		{"kaushik.das@deloitte.com", "Kaushik", "Das", "{first}.{last}"},
+		{"kdas@deloitte.com", "Kaushik", "Das", "{finit}{last}"},
+		{"kaushik@deloitte.com", "Kaushik", "Das", "{first}"},
+		{"das.kaushik@deloitte.com", "Kaushik", "Das", "{last}.{first}"},
+		{"kaushikd@deloitte.com", "Kaushik", "Das", "{first}{linit}"},
+	}
+
+	for _, tc := range tests {
+		pat := DetectPattern(tc.email, tc.firstName, tc.lastName)
+		if pat != tc.expected {
+			t.Errorf("DetectPattern(%q, %q, %q) = %q, want %q", tc.email, tc.firstName, tc.lastName, pat, tc.expected)
+		}
+
+		formatted := FormatPattern(pat, tc.firstName, tc.lastName, "deloitte.com")
+		if formatted != tc.email {
+			t.Errorf("FormatPattern(%q) = %q, want %q", pat, formatted, tc.email)
+		}
+	}
+}

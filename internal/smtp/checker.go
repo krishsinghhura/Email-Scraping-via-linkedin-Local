@@ -155,16 +155,68 @@ func ProbeMailbox(mxHost, targetEmail, senderDomain string, timeout time.Duratio
 func GenerateRandomMailbox(domain string) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("random_check_xyz123@%s", domain)
+		return fmt.Sprintf("catchall_chk_xyz123@%s", domain)
 	}
 	return fmt.Sprintf("catchall_chk_%s@%s", hex.EncodeToString(b), domain)
 }
 
+func GenerateSecondaryRandomMailbox(domain string) string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("probe_fake_xyz123@%s", domain)
+	}
+	return fmt.Sprintf("probe_fake_%s@%s", hex.EncodeToString(b), domain)
+}
+
 func IsCatchAllMultiMX(mxHosts []string, domain, senderDomain string, timeout time.Duration) bool {
-	probeEmail := GenerateRandomMailbox(domain)
-	return ProbeMailboxMultiMX(mxHosts, probeEmail, senderDomain, timeout)
+	probe1 := GenerateRandomMailbox(domain)
+	if !ProbeMailboxMultiMX(mxHosts, probe1, senderDomain, timeout) {
+		return false
+	}
+
+	// Secondary check with distinct prefix to confirm catch-all policy
+	probe2 := GenerateSecondaryRandomMailbox(domain)
+	return ProbeMailboxMultiMX(mxHosts, probe2, senderDomain, timeout)
 }
 
 func IsCatchAll(mxHost, domain, senderDomain string, timeout time.Duration) bool {
 	return IsCatchAllMultiMX([]string{mxHost}, domain, senderDomain, timeout)
 }
+
+func ProbeVRFY(mxHost, targetEmail, senderDomain string, timeout time.Duration) (valid bool, supported bool) {
+	addr := net.JoinHostPort(mxHost, "25")
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false, false
+	}
+	defer conn.Close()
+
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	client, err := netsmtp.NewClient(conn, mxHost)
+	if err != nil {
+		return false, false
+	}
+	defer client.Close()
+
+	if err := client.Hello(senderDomain); err != nil {
+		return false, false
+	}
+
+	errVRFY := client.Verify(targetEmail)
+	if errVRFY == nil {
+		return true, true
+	}
+
+	if tpErr, ok := errVRFY.(*textproto.Error); ok {
+		if tpErr.Code == 250 || tpErr.Code == 251 {
+			return true, true
+		}
+		if tpErr.Code == 550 || tpErr.Code == 551 || tpErr.Code == 553 {
+			return false, true
+		}
+	}
+
+	return false, false
+}
+
