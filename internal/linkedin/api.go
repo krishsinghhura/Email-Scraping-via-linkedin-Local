@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"email-verifier-cli/internal/cache"
 	"email-verifier-cli/internal/config"
 	"email-verifier-cli/internal/models"
 )
@@ -574,3 +575,76 @@ func (c *APIClient) SearchLeads(keywords string, limit int) ([]models.Contact, e
 
 	return allContacts, nil
 }
+
+func (c *APIClient) FetchCompanyWebsite(companyUniversalNameOrID string) (string, error) {
+	companyUniversalNameOrID = strings.TrimSpace(companyUniversalNameOrID)
+	if companyUniversalNameOrID == "" {
+		return "", fmt.Errorf("empty company identifier")
+	}
+
+	store := cache.GetGlobalStore()
+	if dom, ok := store.GetCompanyDomain(companyUniversalNameOrID); ok && dom != "" {
+		if checkDomainMX(dom) {
+			return dom, nil
+		}
+	}
+
+	if c.LiAt != "" || c.CookieHeader != "" {
+		apiURL := fmt.Sprintf("https://www.linkedin.com/voyager/api/organization/companies?decorationId=com.linkedin.voyager.deco.organization.web.WebFullCompanyMain-34&q=universalName&universalName=%s", url.QueryEscape(companyUniversalNameOrID))
+		req, err := c.newRequest("GET", apiURL)
+		if err == nil {
+			resp, errDo := c.HTTPClient.Do(req)
+			if errDo == nil {
+				defer resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+					var res struct {
+						Elements []struct {
+							WebsiteURL     string `json:"websiteUrl"`
+							CompanyPageURL string `json:"companyPageUrl"`
+						} `json:"elements"`
+					}
+					if errJSON := json.Unmarshal(body, &res); errJSON == nil && len(res.Elements) > 0 {
+						website := res.Elements[0].WebsiteURL
+						if website == "" {
+							website = res.Elements[0].CompanyPageURL
+						}
+						if website != "" {
+							dom := ExtractRootDomain(website)
+							if dom != "" && checkDomainMX(dom) {
+								store.SetCompanyDomain(companyUniversalNameOrID, dom)
+								return dom, nil
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	pubURL := fmt.Sprintf("https://www.linkedin.com/company/%s/about/", companyUniversalNameOrID)
+	req, err := http.NewRequest("GET", pubURL, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		resp, errDo := c.HTTPClient.Do(req)
+		if errDo == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+				content := string(body)
+				reSameAs := regexp.MustCompile(`"sameAs"\s*:\s*"([^"]+)"`)
+				if m := reSameAs.FindStringSubmatch(content); len(m) > 1 {
+					dom := ExtractRootDomain(m[1])
+					if dom != "" && checkDomainMX(dom) {
+						store.SetCompanyDomain(companyUniversalNameOrID, dom)
+						return dom, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("could not fetch website for company %s", companyUniversalNameOrID)
+}
+
