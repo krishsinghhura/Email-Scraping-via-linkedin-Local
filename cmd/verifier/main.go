@@ -604,6 +604,22 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 	return c
 }
 
+func renderProgressBar(current, total int, width int) string {
+	if total <= 0 {
+		return ""
+	}
+	pct := float64(current) / float64(total) * 100
+	if pct > 100 {
+		pct = 100
+	}
+	filled := int(float64(width) * float64(current) / float64(total))
+	if filled > width {
+		filled = width
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	return fmt.Sprintf("[%s] %5.1f%% (%d/%d)", bar, pct, current, total)
+}
+
 func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeout, throttleDelay time.Duration, concurrency int) []models.Contact {
 	total := len(contacts)
 	if total == 0 {
@@ -618,61 +634,113 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 	}
 
 	results := make([]models.Contact, total)
+	startTime := time.Now()
+
+	var completedCounter int32
+	var personalCounter int32
+	var workCounter int32
+	var bothCounter int32
+	var printMu sync.Mutex
 
 	if concurrency == 1 {
 		for i, c := range contacts {
-			fmt.Printf("\n[%d/%d] Processing Connection: %s %s\n", i+1, total, c.FirstName, c.LastName)
 			res := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
 			results[i] = res
-			if res.VerifiedEmail != "" {
-				fmt.Printf("  [%d%% %s] %s (%s)\n", res.ConfidenceScore, res.ConfidenceTier, res.VerifiedEmail, res.VerificationReason)
+
+			if res.PersonalEmail != "" && res.WorkEmail != "" {
+				bothCounter++
+			} else if res.PersonalEmail != "" {
+				personalCounter++
+			} else if res.WorkEmail != "" {
+				workCounter++
+			}
+
+			bar := renderProgressBar(i+1, total, 15)
+			badge := fmt.Sprintf("[%d%% %s]", res.ConfidenceScore, res.ConfidenceTier)
+			if res.PersonalEmail != "" && res.WorkEmail != "" {
+				fmt.Printf("%s | %s %s %s -> Personal: %s | Work: %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail, res.VerificationReason)
+			} else if res.PersonalEmail != "" {
+				fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.VerificationReason)
+			} else if res.WorkEmail != "" {
+				fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.WorkEmail, res.VerificationReason)
 			} else {
-				fmt.Printf("  [0%% %s] %s (%s)\n", res.ConfidenceTier, res.Status, res.VerificationReason)
+				fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.Status, res.VerificationReason)
 			}
 		}
-		return results
-	}
+	} else {
+		fmt.Printf("[INFO] Launching %d concurrent verification workers for %d contacts...\n\n", concurrency, total)
 
-	fmt.Printf("[INFO] Launching %d concurrent verification workers for %d contacts...\n\n", concurrency, total)
+		domainPool := &DomainLockPool{locks: make(map[string]*sync.Mutex)}
+		jobs := make(chan int, total)
+		for i := 0; i < total; i++ {
+			jobs <- i
+		}
+		close(jobs)
 
-	domainPool := &DomainLockPool{locks: make(map[string]*sync.Mutex)}
-	jobs := make(chan int, total)
-	for i := 0; i < total; i++ {
-		jobs <- i
-	}
-	close(jobs)
+		var wg sync.WaitGroup
 
-	var completedCounter int32
-	var printMu sync.Mutex
-	var wg sync.WaitGroup
+		for w := 0; w < concurrency; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for idx := range jobs {
+					c := contacts[idx]
+					res := verifySingleContact(c, senderDomain, timeout, throttleDelay, domainPool, false)
+					results[idx] = res
 
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for idx := range jobs {
-				c := contacts[idx]
-				res := verifySingleContact(c, senderDomain, timeout, throttleDelay, domainPool, false)
-				results[idx] = res
+					curr := atomic.AddInt32(&completedCounter, 1)
+					if res.PersonalEmail != "" && res.WorkEmail != "" {
+						atomic.AddInt32(&bothCounter, 1)
+					} else if res.PersonalEmail != "" {
+						atomic.AddInt32(&personalCounter, 1)
+					} else if res.WorkEmail != "" {
+						atomic.AddInt32(&workCounter, 1)
+					}
 
-				curr := atomic.AddInt32(&completedCounter, 1)
-				printMu.Lock()
-				badge := fmt.Sprintf("[%d%% %s]", res.ConfidenceScore, res.ConfidenceTier)
-				if res.PersonalEmail != "" && res.WorkEmail != "" {
-					fmt.Printf("[%d/%d] %s %s %s -> Personal: %s | Work: %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail, res.VerificationReason)
-				} else if res.PersonalEmail != "" {
-					fmt.Printf("[%d/%d] %s %s %s -> %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.PersonalEmail, res.VerificationReason)
-				} else if res.WorkEmail != "" {
-					fmt.Printf("[%d/%d] %s %s %s -> %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.WorkEmail, res.VerificationReason)
-				} else {
-					fmt.Printf("[%d/%d] %s %s %s -> %s (%s)\n", curr, total, badge, res.FirstName, res.LastName, res.Status, res.VerificationReason)
+					bar := renderProgressBar(int(curr), total, 15)
+					badge := fmt.Sprintf("[%d%% %s]", res.ConfidenceScore, res.ConfidenceTier)
+
+					printMu.Lock()
+					if res.PersonalEmail != "" && res.WorkEmail != "" {
+						fmt.Printf("%s | %s %s %s -> Personal: %s | Work: %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail, res.VerificationReason)
+					} else if res.PersonalEmail != "" {
+						fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.VerificationReason)
+					} else if res.WorkEmail != "" {
+						fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.WorkEmail, res.VerificationReason)
+					} else {
+						fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.Status, res.VerificationReason)
+					}
+					printMu.Unlock()
 				}
-				printMu.Unlock()
-			}
-		}()
+			}()
+		}
+
+		wg.Wait()
 	}
 
-	wg.Wait()
+	elapsed := time.Since(startTime).Round(time.Second)
+	pTotal := atomic.LoadInt32(&personalCounter)
+	wTotal := atomic.LoadInt32(&workCounter)
+	bTotal := atomic.LoadInt32(&bothCounter)
+	vTotal := pTotal + wTotal + bTotal
+	failedTotal := total - int(vTotal)
+	pctSuccess := 0.0
+	if total > 0 {
+		pctSuccess = float64(vTotal) / float64(total) * 100
+	}
+
+	fmt.Println("\n==================================================")
+	fmt.Println("             Verification Summary                 ")
+	fmt.Println("==================================================")
+	fmt.Printf("Total Contacts:            %d\n", total)
+	fmt.Printf("Emails Verified:           %d (%.1f%%)\n", vTotal, pctSuccess)
+	fmt.Printf(" - Personal (Gmail/Outlook): %d\n", pTotal+bTotal)
+	fmt.Printf(" - Corporate Mailboxes:      %d\n", wTotal+bTotal)
+	fmt.Printf(" - Dual-Verified (Both):     %d\n", bTotal)
+	fmt.Printf("Undeliverable / Failed:    %d\n", failedTotal)
+	fmt.Printf("Time Elapsed:              %s\n", elapsed)
+	fmt.Println("==================================================")
+
 	return results
 }
 
