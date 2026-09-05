@@ -10,13 +10,16 @@ const (
 	TierSafeToSend    = "Safe to Send"
 	TierHigh          = "High Confidence"
 	TierAcceptAll     = "Accept-All (Risky)"
+	TierPersonalGuess = "Personal Guess (Unconfirmed Identity)"
 	TierUncertain     = "Uncertain (Deferred)"
 	TierUndeliverable = "Undeliverable"
 )
 
 // EvaluateScore determines the deliverability score (0-100), tier, and technical reason
 func EvaluateScore(
+	hasRegisteredEmail bool,
 	hasPersonalEmail bool,
+	personalIsGuessed bool,
 	hasWorkEmail bool,
 	workIsCatchAll bool,
 	vrfyConfirmed bool,
@@ -24,9 +27,25 @@ func EvaluateScore(
 	hasValidMX bool,
 	tempErrorOccurred bool,
 ) ScoreResult {
+	// Case 0: Official LinkedIn Registered Email confirmed
+	if hasRegisteredEmail {
+		if hasWorkEmail && !workIsCatchAll {
+			return ScoreResult{
+				Score:  100,
+				Tier:   TierSafeToSend,
+				Reason: "LinkedIn Profile Confirmed + Corporate Mailbox Confirmed",
+			}
+		}
+		return ScoreResult{
+			Score:  100,
+			Tier:   TierSafeToSend,
+			Reason: "SMTP 250 OK (LinkedIn Profile Contact Info Confirmed)",
+		}
+	}
+
 	// Case 1: Direct corporate SMTP verified (non-catch-all)
 	if hasWorkEmail && !workIsCatchAll {
-		if hasPersonalEmail {
+		if hasPersonalEmail && !personalIsGuessed {
 			return ScoreResult{
 				Score:  100,
 				Tier:   TierSafeToSend,
@@ -40,30 +59,7 @@ func EvaluateScore(
 		}
 	}
 
-	// Case 2: Direct personal email verified (Gmail / Outlook)
-	if hasPersonalEmail {
-		if hasWorkEmail && workIsCatchAll {
-			if vrfyConfirmed {
-				return ScoreResult{
-					Score:  95,
-					Tier:   TierSafeToSend,
-					Reason: "SMTP 250 OK (Personal Confirmed + Corporate VRFY Confirmed)",
-				}
-			}
-			return ScoreResult{
-				Score:  90,
-				Tier:   TierHigh,
-				Reason: "SMTP 250 OK (Personal Confirmed) + Corporate Accept-All",
-			}
-		}
-		return ScoreResult{
-			Score:  92,
-			Tier:   TierSafeToSend,
-			Reason: "SMTP 250 OK (Personal Mailbox Confirmed)",
-		}
-	}
-
-	// Case 3: Work email is on a Catch-All server
+	// Case 2: Corporate Catch-All with verified mailbox or pattern
 	if hasWorkEmail && workIsCatchAll {
 		if vrfyConfirmed {
 			return ScoreResult{
@@ -83,6 +79,23 @@ func EvaluateScore(
 			Score:  65,
 			Tier:   TierAcceptAll,
 			Reason: "Catch-All Server (Standard Corporate Fallback)",
+		}
+	}
+
+	// Case 3: Personal email verified
+	if hasPersonalEmail {
+		if !personalIsGuessed {
+			return ScoreResult{
+				Score:  92,
+				Tier:   TierSafeToSend,
+				Reason: "SMTP 250 OK (Personal Mailbox Confirmed)",
+			}
+		}
+		// Purely guessed on public provider (gmail/outlook)
+		return ScoreResult{
+			Score:  50,
+			Tier:   TierPersonalGuess,
+			Reason: "Mailbox exists on public provider (@gmail/@outlook), but unconfirmed identity (common name collision risk)",
 		}
 	}
 

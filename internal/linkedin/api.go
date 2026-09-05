@@ -622,3 +622,49 @@ func (c *APIClient) FetchCompanyWebsite(companyUniversalNameOrID string) (string
 	return "", fmt.Errorf("could not fetch website for company %s", companyUniversalNameOrID)
 }
 
+func (c *APIClient) FetchContactInfo(slugOrPublicID string) (string, error) {
+	slugOrPublicID = strings.TrimSpace(slugOrPublicID)
+	if slugOrPublicID == "" {
+		return "", fmt.Errorf("empty profile identifier")
+	}
+
+	apiURL := fmt.Sprintf("https://www.linkedin.com/voyager/api/identity/profiles/%s/profileContactInfo", url.PathEscape(slugOrPublicID))
+	req, err := c.newRequest("GET", apiURL)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("contact info API returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		return "", err
+	}
+
+	var res map[string]interface{}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", err
+	}
+
+	if email, ok := res["emailAddress"].(string); ok && strings.TrimSpace(email) != "" {
+		return strings.TrimSpace(email), nil
+	}
+
+	if data, ok := res["data"].(map[string]interface{}); ok {
+		if email, ok := data["emailAddress"].(string); ok && strings.TrimSpace(email) != "" {
+			return strings.TrimSpace(email), nil
+		}
+	}
+
+	return "", fmt.Errorf("no email in contact info")
+}
+
+

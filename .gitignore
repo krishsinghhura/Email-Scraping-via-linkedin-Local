@@ -4,3 +4,4 @@ bin/
 !contacts_template.xlsx
 .DS_Store
 .email-verifier-config.json
+email-verifier

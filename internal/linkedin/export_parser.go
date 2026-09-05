@@ -207,13 +207,14 @@ func ParseLinkedInExportCSV(data []byte) ([]models.Contact, error) {
 		}
 
 		contacts = append(contacts, models.Contact{
-			RowIndex:      len(contacts) + 1,
-			FirstName:     fn,
-			LastName:      ln,
-			Domain:        dom,
-			LinkedInURL:   urlStr,
-			VerifiedEmail: email,
-			Status:        headline,
+			RowIndex:        len(contacts) + 1,
+			FirstName:       fn,
+			LastName:        ln,
+			Domain:          dom,
+			LinkedInURL:     urlStr,
+			RegisteredEmail: email,
+			VerifiedEmail:   email,
+			Status:          headline,
 		})
 	}
 

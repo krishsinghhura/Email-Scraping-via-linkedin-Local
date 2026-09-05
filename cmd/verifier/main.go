@@ -49,6 +49,8 @@ func main() {
 	autoYesShort := flag.Bool("y", false, "Short alias for -yes")
 	importExport := flag.String("import-export", "", "Path to LinkedIn data export zip archive or Connections.csv")
 
+	singleURL := flag.String("url", "", "Target LinkedIn profile URL for single verification")
+	singleDomain := flag.String("domain", "", "Target corporate domain for single verification")
 	inputPath := flag.String("input", "contacts.xlsx", "Path to input Excel spreadsheet or CSV/ZIP")
 	outputPath := flag.String("output", "verified_campaign.xlsx", "Path to output Excel spreadsheet")
 	senderDomain := flag.String("sender-domain", "example.com", "Domain to use for HELO and MAIL FROM")
@@ -56,6 +58,8 @@ func main() {
 	delayMs := flag.Int("delay", 250, "Throttle delay in milliseconds between mailbox probes")
 	concurrency := flag.Int("concurrency", 5, "Number of concurrent workers for email verification")
 	searchQuery := flag.String("search", "", "Search LinkedIn for prospective leads by keyword or title")
+	workOnly := flag.Bool("work-only", false, "Strict B2B mode: probe only corporate/work emails; skip public providers (@gmail, @outlook)")
+	fetchContactInfo := flag.Bool("fetch-contact-info", false, "Query LinkedIn Profile Contact Info for authentic registered email addresses")
 	flag.Parse()
 
 	if *setupFlag {
@@ -113,31 +117,29 @@ func main() {
 		targetConnURL = *fecthConnections
 	}
 	if targetConnURL != "" {
-		handleFetchConnections(targetConnURL, *limit, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
+		handleFetchConnections(targetConnURL, *limit, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency, *workOnly, *fetchContactInfo)
 		return
 	}
 
 	if *searchQuery != "" {
-		handleLinkedInSearch(*searchQuery, *limit, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
+		handleLinkedInSearch(*searchQuery, *limit, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency, *workOnly, *fetchContactInfo)
 		return
 	}
 
 	if *importExport != "" {
-		handleLinkedInExport(*importExport, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
+		handleLinkedInExport(*importExport, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency, *workOnly, *fetchContactInfo)
 		return
 	}
 
-	singleURL := flag.Lookup("url")
-	singleDomain := flag.Lookup("domain")
-	if singleURL != nil && singleURL.Value.String() != "" {
-		handleSingleProfile(singleURL.Value.String(), singleDomain.Value.String(), *outputPath, *senderDomain, timeout, throttleDelay)
+	if *singleURL != "" {
+		handleSingleProfile(*singleURL, *singleDomain, *outputPath, *senderDomain, timeout, throttleDelay, *workOnly, *fetchContactInfo)
 		return
 	}
 
-	handleExcelBatch(*inputPath, *outputPath, *senderDomain, timeout, throttleDelay, *concurrency)
+	handleExcelBatch(*inputPath, *outputPath, *senderDomain, timeout, throttleDelay, *concurrency, *workOnly, *fetchContactInfo)
 }
 
-func handleFetchConnections(targetProfileURL string, limit int, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+func handleFetchConnections(targetProfileURL string, limit int, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int, workOnly bool, fetchContactInfo bool) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		fmt.Printf("[WARN] Unable to load config file: %v\n", err)
@@ -212,7 +214,7 @@ func handleFetchConnections(targetProfileURL string, limit int, outputPath, send
 	fmt.Println("   Starting Email Verification for Connections   ")
 	fmt.Println("==================================================")
 
-	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
+	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency, workOnly, apiClient, fetchContactInfo)
 
 	excelPath, err := saveContactsToExcel(excelFileName, verifiedContacts)
 	if err != nil {
@@ -225,7 +227,7 @@ func handleFetchConnections(targetProfileURL string, limit int, outputPath, send
 	fmt.Println("==================================================")
 }
 
-func handleLinkedInSearch(keywords string, limit int, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+func handleLinkedInSearch(keywords string, limit int, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int, workOnly bool, fetchContactInfo bool) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		fmt.Printf("[WARN] Unable to load config file: %v\n", err)
@@ -260,7 +262,10 @@ func handleLinkedInSearch(keywords string, limit int, senderDomain string, timeo
 	baseSlug = strings.ReplaceAll(baseSlug, "\"", "")
 	baseSlug = strings.ReplaceAll(baseSlug, "'", "")
 	csvFileName := fmt.Sprintf("%s_leads.csv", baseSlug)
-	excelFileName := fmt.Sprintf("%s_verified_leads.xlsx", baseSlug)
+	excelFileName := outputPath
+	if excelFileName == "" || excelFileName == "verified_campaign.xlsx" {
+		excelFileName = fmt.Sprintf("%s_verified_leads.xlsx", baseSlug)
+	}
 
 	csvPath, err := csv.SaveConnectionsToCSV(csvFileName, contacts)
 	if err != nil {
@@ -288,7 +293,7 @@ func handleLinkedInSearch(keywords string, limit int, senderDomain string, timeo
 	fmt.Println("       Starting Email Verification for Leads      ")
 	fmt.Println("==================================================")
 
-	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
+	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency, workOnly, apiClient, fetchContactInfo)
 
 	excelPath, err := saveContactsToExcel(excelFileName, verifiedContacts)
 	if err != nil {
@@ -301,7 +306,7 @@ func handleLinkedInSearch(keywords string, limit int, senderDomain string, timeo
 	fmt.Println("==================================================")
 }
 
-func handleLinkedInExport(exportPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+func handleLinkedInExport(exportPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int, workOnly bool, fetchContactInfo bool) {
 	fmt.Printf("[INFO] Inspecting LinkedIn Data Export: %s\n", exportPath)
 
 	contacts, suggestedName, err := linkedin.ParseLinkedInExport(exportPath)
@@ -352,7 +357,13 @@ func handleLinkedInExport(exportPath, outputPath, senderDomain string, timeout, 
 	fmt.Println("   Starting Email Verification for Connections   ")
 	fmt.Println("==================================================")
 
-	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
+	var apiClient *linkedin.APIClient
+	cfg, errCfg := config.LoadConfig()
+	if errCfg == nil && (cfg.LiAt != "" || cfg.CookieHeader != "") {
+		apiClient = linkedin.NewAPIClient(cfg.LiAt, cfg.LiRm, cfg.JSessionID, cfg.CookieHeader)
+	}
+
+	verifiedContacts := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency, workOnly, apiClient, fetchContactInfo)
 
 	excelPath, err := saveContactsToExcel(excelFileName, verifiedContacts)
 	if err != nil {
@@ -385,11 +396,11 @@ func (p *DomainLockPool) GetLock(domain string) *sync.Mutex {
 	return l
 }
 
-func verifySingleContact(c models.Contact, senderDomain string, timeout, throttleDelay time.Duration, domainPool *DomainLockPool, verbose bool) models.Contact {
+func verifySingleContact(c models.Contact, senderDomain string, timeout, throttleDelay time.Duration, domainPool *DomainLockPool, verbose bool, workOnly bool, apiClient *linkedin.APIClient, fetchContactInfo bool) models.Contact {
 	firstName := c.FirstName
 	lastName := c.LastName
 
-	if firstName == "" {
+	if firstName == "" && c.RegisteredEmail == "" {
 		c.Status = "Skipped (Missing Name)"
 		c.CampaignSent = "No"
 		c.ConfidenceScore = 0
@@ -398,44 +409,43 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		return c
 	}
 
-	personalDomains := []string{"gmail.com", "outlook.com"}
-	for _, pDom := range personalDomains {
-		var pLock *sync.Mutex
-		if domainPool != nil {
-			pLock = domainPool.GetLock(pDom)
-			pLock.Lock()
-		}
-
-		pMXHosts, err := smtp.ResolveMXRecords(pDom)
-		if err == nil && len(pMXHosts) > 0 {
-			pCandidates := linkedin.GetCandidatePermutations(firstName, lastName, pDom)
-			for _, cand := range pCandidates {
-				if verbose {
-					fmt.Printf("  -> Probing personal: %s ... ", cand)
-				}
-				if smtp.ProbeMailboxMultiMX(pMXHosts, cand, senderDomain, timeout) {
-					if verbose {
-						fmt.Println("[VALID]")
-					}
-					c.PersonalEmail = cand
-					break
-				}
-				if verbose {
-					fmt.Println("[REJECTED]")
-				}
-				time.Sleep(throttleDelay)
+	// 1. LinkedIn Profile Contact Info Fetching (Authentic 1st-degree email)
+	if fetchContactInfo && apiClient != nil && c.RegisteredEmail == "" && c.LinkedInURL != "" {
+		info, err := linkedin.ParseProfileURL(c.LinkedInURL)
+		if err == nil && info.Slug != "" {
+			if verbose {
+				fmt.Printf("  -> Fetching LinkedIn contact info for: %s ... ", info.Slug)
 			}
-		}
-
-		if pLock != nil {
-			pLock.Unlock()
-		}
-
-		if c.PersonalEmail != "" {
-			break
+			regEmail, errFetch := apiClient.FetchContactInfo(info.Slug)
+			if errFetch == nil && regEmail != "" {
+				c.RegisteredEmail = regEmail
+				if verbose {
+					fmt.Printf("[FOUND: %s]\n", regEmail)
+				}
+			} else if verbose {
+				fmt.Println("[NONE]")
+			}
 		}
 	}
 
+	// 1b. If registered email is known, classify or pre-assign it
+	if c.RegisteredEmail != "" {
+		parts := strings.Split(c.RegisteredEmail, "@")
+		if len(parts) == 2 {
+			regDom := strings.ToLower(strings.TrimSpace(parts[1]))
+			if regDom == "gmail.com" || regDom == "outlook.com" || regDom == "hotmail.com" || regDom == "yahoo.com" {
+				c.PersonalEmail = c.RegisteredEmail
+				c.IsPersonalGuessed = false
+			} else {
+				c.WorkEmail = c.RegisteredEmail
+				if c.Domain == "" {
+					c.Domain = regDom
+				}
+			}
+		}
+	}
+
+	// 2. Resolve Target Corporate Domain (Company enrichment)
 	targetDomain := c.Domain
 	if targetDomain == "gmail.com" || targetDomain == "outlook.com" || len(targetDomain) > 30 {
 		targetDomain = ""
@@ -474,10 +484,11 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 
 	c.Domain = targetDomain
 
+	// 3. PRIORITY 1: Verify Corporate / Work Mailbox FIRST
 	isCatchAll := false
 	vrfyConfirmed := false
 
-	if targetDomain != "" && targetDomain != "gmail.com" && targetDomain != "outlook.com" {
+	if c.WorkEmail == "" && targetDomain != "" && targetDomain != "gmail.com" && targetDomain != "outlook.com" {
 		var lock *sync.Mutex
 		if domainPool != nil {
 			lock = domainPool.GetLock(targetDomain)
@@ -513,7 +524,7 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 					fmt.Printf("  [WARN] Company domain %s is Catch-All (Applying Accept-All Strategy)...\n", targetDomain)
 				}
 
-				// 1. Check if domain pattern is cached
+				// Check if domain pattern is cached
 				var chosenCandidate string
 				cachedPat, hasPat := cache.GetGlobalStore().GetDomainPattern(targetDomain)
 				if hasPat && cachedPat != "" {
@@ -522,7 +533,7 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 					chosenCandidate = permutator.GetMostLikelyCandidate(firstName, lastName, targetDomain)
 				}
 
-				// 2. Check VRFY probe if supported
+				// Check VRFY probe if supported
 				if len(mxHosts) > 0 {
 					vrfyValid, vrfySupported := smtp.ProbeVRFY(mxHosts[0], chosenCandidate, senderDomain, timeout)
 					if vrfySupported && vrfyValid {
@@ -542,24 +553,52 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 		}
 	}
 
-	if c.PersonalEmail != "" {
-		c.VerifiedEmail = c.PersonalEmail
-		if c.WorkEmail != "" {
-			if isCatchAll {
-				if vrfyConfirmed {
-					c.Status = "Verified (Personal) + Work (VRFY Confirmed)"
-				} else {
-					c.Status = "Verified (Personal) + Work (Catch-All)"
-				}
-			} else {
-				c.Status = "Verified (Personal + Work)"
+	// 4. PRIORITY 2: Personal Mailbox Probing (ONLY IF !workOnly and PersonalEmail not already known)
+	if !workOnly && c.PersonalEmail == "" && firstName != "" && lastName != "" {
+		personalDomains := []string{"gmail.com", "outlook.com"}
+		for _, pDom := range personalDomains {
+			var pLock *sync.Mutex
+			if domainPool != nil {
+				pLock = domainPool.GetLock(pDom)
+				pLock.Lock()
 			}
-		} else {
-			c.Status = "Verified (Personal)"
+
+			pMXHosts, err := smtp.ResolveMXRecords(pDom)
+			if err == nil && len(pMXHosts) > 0 {
+				pCandidates := linkedin.GetCandidatePermutations(firstName, lastName, pDom)
+				for _, cand := range pCandidates {
+					if verbose {
+						fmt.Printf("  -> Probing personal: %s ... ", cand)
+					}
+					if smtp.ProbeMailboxMultiMX(pMXHosts, cand, senderDomain, timeout) {
+						if verbose {
+							fmt.Println("[VALID]")
+						}
+						c.PersonalEmail = cand
+						c.IsPersonalGuessed = true
+						break
+					}
+					if verbose {
+						fmt.Println("[REJECTED]")
+					}
+					time.Sleep(throttleDelay)
+				}
+			}
+
+			if pLock != nil {
+				pLock.Unlock()
+			}
+
+			if c.PersonalEmail != "" {
+				break
+			}
 		}
-		c.CampaignSent = "Pending"
-	} else if c.WorkEmail != "" {
+	}
+
+	// 5. Assign Primary VerifiedEmail & Status (Work > Registered > Personal)
+	if c.WorkEmail != "" {
 		c.VerifiedEmail = c.WorkEmail
+		c.CampaignSent = "Pending"
 		if isCatchAll {
 			if vrfyConfirmed {
 				c.Status = "Verified (Work - VRFY Confirmed)"
@@ -567,20 +606,40 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 				c.Status = "Catch-All (High Confidence)"
 			}
 		} else {
-			c.Status = "Verified (Work)"
+			if c.PersonalEmail != "" {
+				if c.IsPersonalGuessed {
+					c.Status = "Verified (Work) + Personal Guess"
+				} else {
+					c.Status = "Verified (Personal + Work)"
+				}
+			} else {
+				c.Status = "Verified (Work)"
+			}
 		}
+	} else if c.RegisteredEmail != "" {
+		c.VerifiedEmail = c.RegisteredEmail
 		c.CampaignSent = "Pending"
+		c.Status = "Verified (LinkedIn Registered Email)"
+	} else if c.PersonalEmail != "" {
+		c.VerifiedEmail = c.PersonalEmail
+		c.CampaignSent = "Pending"
+		if c.IsPersonalGuessed {
+			c.Status = "Verified (Personal Guess - Unconfirmed)"
+		} else {
+			c.Status = "Verified (Personal)"
+		}
 	} else {
 		c.Status = "Not Found"
 		c.CampaignSent = "No"
 	}
 
+	// 6. Deliverability Confidence Scoring
 	patternMatched := false
 	if isCatchAll && targetDomain != "" {
 		_, patternMatched = cache.GetGlobalStore().GetDomainPattern(targetDomain)
 	}
 
-	hasValidMX := targetDomain != "" || c.PersonalEmail != ""
+	hasValidMX := targetDomain != "" || c.PersonalEmail != "" || c.RegisteredEmail != ""
 	if targetDomain != "" {
 		if hosts, err := smtp.ResolveMXRecords(targetDomain); err == nil && len(hosts) > 0 {
 			hasValidMX = true
@@ -588,7 +647,9 @@ func verifySingleContact(c models.Contact, senderDomain string, timeout, throttl
 	}
 
 	scoreRes := scoring.EvaluateScore(
+		c.RegisteredEmail != "",
 		c.PersonalEmail != "",
+		c.IsPersonalGuessed,
 		c.WorkEmail != "",
 		isCatchAll,
 		vrfyConfirmed,
@@ -620,7 +681,7 @@ func renderProgressBar(current, total int, width int) string {
 	return fmt.Sprintf("[%s] %5.1f%% (%d/%d)", bar, pct, current, total)
 }
 
-func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeout, throttleDelay time.Duration, concurrency int) []models.Contact {
+func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeout, throttleDelay time.Duration, concurrency int, workOnly bool, apiClient *linkedin.APIClient, fetchContactInfo bool) []models.Contact {
 	total := len(contacts)
 	if total == 0 {
 		return contacts
@@ -639,14 +700,18 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 	var completedCounter int32
 	var personalCounter int32
 	var workCounter int32
+	var registeredCounter int32
 	var bothCounter int32
 	var printMu sync.Mutex
 
 	if concurrency == 1 {
 		for i, c := range contacts {
-			res := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
+			res := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true, workOnly, apiClient, fetchContactInfo)
 			results[i] = res
 
+			if res.RegisteredEmail != "" {
+				registeredCounter++
+			}
 			if res.PersonalEmail != "" && res.WorkEmail != "" {
 				bothCounter++
 			} else if res.PersonalEmail != "" {
@@ -657,18 +722,29 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 
 			bar := renderProgressBar(i+1, total, 15)
 			badge := fmt.Sprintf("[%d%% %s]", res.ConfidenceScore, res.ConfidenceTier)
-			if res.PersonalEmail != "" && res.WorkEmail != "" {
-				fmt.Printf("%s | %s %s %s -> Personal: %s | Work: %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail, res.VerificationReason)
-			} else if res.PersonalEmail != "" {
-				fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.VerificationReason)
+			var displayEmail string
+			if res.WorkEmail != "" && res.PersonalEmail != "" {
+				displayEmail = fmt.Sprintf("Work: %s | Personal: %s", res.WorkEmail, res.PersonalEmail)
 			} else if res.WorkEmail != "" {
-				fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.WorkEmail, res.VerificationReason)
+				displayEmail = fmt.Sprintf("Work: %s", res.WorkEmail)
+			} else if res.RegisteredEmail != "" {
+				displayEmail = fmt.Sprintf("Registered: %s", res.RegisteredEmail)
+			} else if res.PersonalEmail != "" {
+				displayEmail = fmt.Sprintf("Personal: %s", res.PersonalEmail)
 			} else {
-				fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.Status, res.VerificationReason)
+				displayEmail = res.Status
 			}
+			fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, displayEmail, res.VerificationReason)
 		}
 	} else {
-		fmt.Printf("[INFO] Launching %d concurrent verification workers for %d contacts...\n\n", concurrency, total)
+		fmt.Printf("[INFO] Launching %d concurrent verification workers for %d contacts...\n", concurrency, total)
+		if workOnly {
+			fmt.Println("[INFO] Strict B2B Mode (-work-only) active: Public personal email guessing disabled.")
+		}
+		if fetchContactInfo {
+			fmt.Println("[INFO] Profile Contact Info resolution (-fetch-contact-info) active.")
+		}
+		fmt.Println()
 
 		domainPool := &DomainLockPool{locks: make(map[string]*sync.Mutex)}
 		jobs := make(chan int, total)
@@ -685,10 +761,13 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 				defer wg.Done()
 				for idx := range jobs {
 					c := contacts[idx]
-					res := verifySingleContact(c, senderDomain, timeout, throttleDelay, domainPool, false)
+					res := verifySingleContact(c, senderDomain, timeout, throttleDelay, domainPool, false, workOnly, apiClient, fetchContactInfo)
 					results[idx] = res
 
 					curr := atomic.AddInt32(&completedCounter, 1)
+					if res.RegisteredEmail != "" {
+						atomic.AddInt32(&registeredCounter, 1)
+					}
 					if res.PersonalEmail != "" && res.WorkEmail != "" {
 						atomic.AddInt32(&bothCounter, 1)
 					} else if res.PersonalEmail != "" {
@@ -700,16 +779,21 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 					bar := renderProgressBar(int(curr), total, 15)
 					badge := fmt.Sprintf("[%d%% %s]", res.ConfidenceScore, res.ConfidenceTier)
 
-					printMu.Lock()
-					if res.PersonalEmail != "" && res.WorkEmail != "" {
-						fmt.Printf("%s | %s %s %s -> Personal: %s | Work: %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.WorkEmail, res.VerificationReason)
-					} else if res.PersonalEmail != "" {
-						fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.PersonalEmail, res.VerificationReason)
+					var displayEmail string
+					if res.WorkEmail != "" && res.PersonalEmail != "" {
+						displayEmail = fmt.Sprintf("Work: %s | Personal: %s", res.WorkEmail, res.PersonalEmail)
 					} else if res.WorkEmail != "" {
-						fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.WorkEmail, res.VerificationReason)
+						displayEmail = fmt.Sprintf("Work: %s", res.WorkEmail)
+					} else if res.RegisteredEmail != "" {
+						displayEmail = fmt.Sprintf("Registered: %s", res.RegisteredEmail)
+					} else if res.PersonalEmail != "" {
+						displayEmail = fmt.Sprintf("Personal: %s", res.PersonalEmail)
 					} else {
-						fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, res.Status, res.VerificationReason)
+						displayEmail = res.Status
 					}
+
+					printMu.Lock()
+					fmt.Printf("%s | %s %s %s -> %s (%s)\n", bar, badge, res.FirstName, res.LastName, displayEmail, res.VerificationReason)
 					printMu.Unlock()
 				}
 			}()
@@ -722,6 +806,7 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 	pTotal := atomic.LoadInt32(&personalCounter)
 	wTotal := atomic.LoadInt32(&workCounter)
 	bTotal := atomic.LoadInt32(&bothCounter)
+	regTotal := atomic.LoadInt32(&registeredCounter)
 	vTotal := pTotal + wTotal + bTotal
 	failedTotal := total - int(vTotal)
 	pctSuccess := 0.0
@@ -734,8 +819,11 @@ func verifyConnectionsList(contacts []models.Contact, senderDomain string, timeo
 	fmt.Println("==================================================")
 	fmt.Printf("Total Contacts:            %d\n", total)
 	fmt.Printf("Emails Verified:           %d (%.1f%%)\n", vTotal, pctSuccess)
-	fmt.Printf(" - Personal (Gmail/Outlook): %d\n", pTotal+bTotal)
 	fmt.Printf(" - Corporate Mailboxes:      %d\n", wTotal+bTotal)
+	if regTotal > 0 {
+		fmt.Printf(" - LinkedIn Registered:      %d\n", regTotal)
+	}
+	fmt.Printf(" - Personal (Gmail/Outlook): %d\n", pTotal+bTotal)
 	fmt.Printf(" - Dual-Verified (Both):     %d\n", bTotal)
 	fmt.Printf("Undeliverable / Failed:    %d\n", failedTotal)
 	fmt.Printf("Time Elapsed:              %s\n", elapsed)
@@ -755,7 +843,7 @@ func saveContactsToExcel(outputPath string, contacts []models.Contact) (string, 
 	return absPath, nil
 }
 
-func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeout, throttleDelay time.Duration) {
+func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeout, throttleDelay time.Duration, workOnly bool, fetchContactInfo bool) {
 	fmt.Printf("[INFO] Scraping single profile: %s\n", urlStr)
 	meta, err := linkedin.ScrapeProfile(urlStr)
 	if err != nil {
@@ -779,7 +867,7 @@ func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeou
 		}
 	}
 
-	if targetDomain == "" {
+	if targetDomain == "" && workOnly {
 		log.Fatalf("[ERROR] Target corporate domain could not be resolved. Please specify manually using -domain <domain.com>.")
 	}
 
@@ -791,11 +879,17 @@ func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeou
 		LinkedInURL: urlStr,
 	}
 
-	verified := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true)
+	var apiClient *linkedin.APIClient
+	cfg, errCfg := config.LoadConfig()
+	if errCfg == nil && (cfg.LiAt != "" || cfg.CookieHeader != "") {
+		apiClient = linkedin.NewAPIClient(cfg.LiAt, cfg.LiRm, cfg.JSessionID, cfg.CookieHeader)
+	}
+
+	verified := verifySingleContact(c, senderDomain, timeout, throttleDelay, nil, true, workOnly, apiClient, fetchContactInfo)
 	if verified.VerifiedEmail != "" {
 		fmt.Printf("\n[VALID] Found valid mailbox: %s (Confidence: %d%% - %s)\n", verified.VerifiedEmail, verified.ConfidenceScore, verified.ConfidenceTier)
 	} else {
-		fmt.Printf("\n[INFO] No valid corporate mailbox verified (%d%% - %s: %s).\n", verified.ConfidenceScore, verified.ConfidenceTier, verified.VerificationReason)
+		fmt.Printf("\n[INFO] No valid mailbox verified (%d%% - %s: %s).\n", verified.ConfidenceScore, verified.ConfidenceTier, verified.VerificationReason)
 	}
 
 	if errSave := excel.CreateSpreadsheet(outputPath, []models.Contact{verified}); errSave != nil {
@@ -805,7 +899,7 @@ func handleSingleProfile(urlStr, domain, outputPath, senderDomain string, timeou
 	fmt.Printf("[SUCCESS] Output saved to: %s\n", outputPath)
 }
 
-func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration, concurrency int) {
+func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration, concurrency int, workOnly bool, fetchContactInfo bool) {
 	ext := strings.ToLower(filepath.Ext(inputPath))
 
 	var contacts []models.Contact
@@ -840,7 +934,13 @@ func handleExcelBatch(inputPath, outputPath, senderDomain string, timeout, throt
 	total := len(contacts)
 	fmt.Printf("[INFO] Loaded %d contact records from %s.\n\n", total, inputPath)
 
-	verified := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency)
+	var apiClient *linkedin.APIClient
+	cfg, errCfg := config.LoadConfig()
+	if errCfg == nil && (cfg.LiAt != "" || cfg.CookieHeader != "") {
+		apiClient = linkedin.NewAPIClient(cfg.LiAt, cfg.LiRm, cfg.JSessionID, cfg.CookieHeader)
+	}
+
+	verified := verifyConnectionsList(contacts, senderDomain, timeout, throttleDelay, concurrency, workOnly, apiClient, fetchContactInfo)
 
 	if handler != nil {
 		for _, c := range verified {

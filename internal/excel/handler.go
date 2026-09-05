@@ -42,7 +42,7 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 	}
 
 	outCols := []string{
-		"Personal Email", "Work Email", "Verified Email",
+		"Work Email", "Registered Email", "Personal Email", "Verified Email",
 		"Deliverability Score", "Confidence Tier", "Verification Reason",
 		"Status", "Campaign Sent",
 	}
@@ -83,6 +83,7 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 			LastName:           getVal("Last Name"),
 			Domain:             getVal("Company Domain", "Domain"),
 			LinkedInURL:        getVal("LinkedIn Profile URL", "LinkedIn URL"),
+			RegisteredEmail:    getVal("Registered Email"),
 			PersonalEmail:      getVal("Personal Email"),
 			WorkEmail:          getVal("Work Email"),
 			VerifiedEmail:      getVal("Verified Email"),
@@ -104,13 +105,17 @@ func OpenSpreadsheet(filePath string) (*Handler, []models.Contact, error) {
 func (h *Handler) UpdateContactRow(c models.Contact) error {
 	scoreStr := fmt.Sprintf("%d%%", c.ConfidenceScore)
 
-	if idx, ok := h.HeaderMap["Personal Email"]; ok {
-		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
-		_ = h.File.SetCellValue(h.SheetName, cell, c.PersonalEmail)
-	}
 	if idx, ok := h.HeaderMap["Work Email"]; ok {
 		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
 		_ = h.File.SetCellValue(h.SheetName, cell, c.WorkEmail)
+	}
+	if idx, ok := h.HeaderMap["Registered Email"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.RegisteredEmail)
+	}
+	if idx, ok := h.HeaderMap["Personal Email"]; ok {
+		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
+		_ = h.File.SetCellValue(h.SheetName, cell, c.PersonalEmail)
 	}
 	if idx, ok := h.HeaderMap["Verified Email"]; ok {
 		cell, _ := excelize.CoordinatesToCellName(idx+1, c.RowIndex)
@@ -163,8 +168,9 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 		"First Name",
 		"Last Name",
 		"Company Domain",
-		"Personal Email",
 		"Work Email",
+		"Registered Email",
+		"Personal Email",
 		"Verified Email",
 		"Deliverability Score",
 		"Confidence Tier",
@@ -187,8 +193,9 @@ func CreateSpreadsheet(outputPath string, contacts []models.Contact) error {
 			c.FirstName,
 			c.LastName,
 			c.Domain,
-			c.PersonalEmail,
 			c.WorkEmail,
+			c.RegisteredEmail,
+			c.PersonalEmail,
 			c.VerifiedEmail,
 			scoreStr,
 			c.ConfidenceTier,
