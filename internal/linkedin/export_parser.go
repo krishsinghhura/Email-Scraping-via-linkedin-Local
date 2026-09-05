@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"email-verifier-cli/internal/cache"
 	"email-verifier-cli/internal/models"
 )
 
@@ -189,19 +190,19 @@ func ParseLinkedInExportCSV(data []byte) ([]models.Contact, error) {
 		}
 		seen[key] = true
 
-		dom := ""
-		if company != "" {
-			if resolved, err := ResolveCompanyDomain(company); err == nil {
-				dom = resolved
-			}
-		}
-
 		headline := position
 		if company != "" {
 			if headline != "" {
 				headline = fmt.Sprintf("%s at %s", headline, company)
 			} else {
 				headline = company
+			}
+		}
+
+		dom := ""
+		if company != "" {
+			if cached, ok := cache.GetGlobalStore().GetCompanyDomain(company); ok && cached != "" {
+				dom = cached
 			}
 		}
 

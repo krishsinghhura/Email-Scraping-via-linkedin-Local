@@ -206,17 +206,8 @@ func (c *APIClient) FetchProfileConnections(profileURLOrSlug string, limit int) 
 			break
 		}
 
+		fmt.Printf("[INFO] Retrieved %d connections from LinkedIn...\n", len(allContacts))
 		time.Sleep(200 * time.Millisecond)
-	}
-
-	for i := range allContacts {
-		if allContacts[i].Domain == "" && allContacts[i].LastName != "" {
-			if comp := extractCompanyFromHeadline(allContacts[i].Status); comp != "" {
-				if dom, errDom := ResolveCompanyDomain(comp); errDom == nil {
-					allContacts[i].Domain = dom
-				}
-			}
-		}
 	}
 
 	return info, allContacts, nil
@@ -310,18 +301,9 @@ func parseFlexibleConnectionsJSON(body []byte) []models.Contact {
 		}
 		seen[key] = true
 
-		comp := extractCompanyFromHeadline(headline)
-		dom := ""
-		if comp != "" {
-			if resolved, err := ResolveCompanyDomain(comp); err == nil {
-				dom = resolved
-			}
-		}
-
 		contacts = append(contacts, models.Contact{
 			FirstName:   fn,
 			LastName:    ln,
-			Domain:      dom,
 			LinkedInURL: urlStr,
 			Status:      headline,
 		})
@@ -545,14 +527,6 @@ func (c *APIClient) SearchLeads(keywords string, limit int) ([]models.Contact, e
 					LinkedInURL: cleanURL,
 					Status:      headline,
 					RowIndex:    len(allContacts) + 2,
-				}
-
-				if headline != "" {
-					if comp := ExtractCompanyFromHeadline(headline); comp != "" {
-						if dom, errDom := ResolveCompanyDomain(comp); errDom == nil && dom != "" {
-							contact.Domain = dom
-						}
-					}
 				}
 
 				allContacts = append(allContacts, contact)

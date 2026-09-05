@@ -113,7 +113,7 @@ func main() {
 		targetConnURL = *fecthConnections
 	}
 	if targetConnURL != "" {
-		handleFetchConnections(targetConnURL, *limit, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
+		handleFetchConnections(targetConnURL, *limit, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
 		return
 	}
 
@@ -123,7 +123,7 @@ func main() {
 	}
 
 	if *importExport != "" {
-		handleLinkedInExport(*importExport, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
+		handleLinkedInExport(*importExport, *outputPath, *senderDomain, timeout, throttleDelay, *autoYes || *autoYesShort, *concurrency)
 		return
 	}
 
@@ -137,7 +137,7 @@ func main() {
 	handleExcelBatch(*inputPath, *outputPath, *senderDomain, timeout, throttleDelay, *concurrency)
 }
 
-func handleFetchConnections(targetProfileURL string, limit int, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+func handleFetchConnections(targetProfileURL string, limit int, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		fmt.Printf("[WARN] Unable to load config file: %v\n", err)
@@ -181,7 +181,10 @@ func handleFetchConnections(targetProfileURL string, limit int, senderDomain str
 		baseSlug = strings.ToLower(fmt.Sprintf("%s_%s", info.FirstName, info.LastName))
 	}
 	csvFileName := fmt.Sprintf("%s_connections.csv", baseSlug)
-	excelFileName := fmt.Sprintf("%s_verified_contacts.xlsx", baseSlug)
+	excelFileName := outputPath
+	if excelFileName == "" || excelFileName == "verified_campaign.xlsx" {
+		excelFileName = fmt.Sprintf("%s_verified_contacts.xlsx", baseSlug)
+	}
 
 	csvPath, err := csv.SaveConnectionsToCSV(csvFileName, contacts)
 	if err != nil {
@@ -298,7 +301,7 @@ func handleLinkedInSearch(keywords string, limit int, senderDomain string, timeo
 	fmt.Println("==================================================")
 }
 
-func handleLinkedInExport(exportPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
+func handleLinkedInExport(exportPath, outputPath, senderDomain string, timeout, throttleDelay time.Duration, autoProceed bool, concurrency int) {
 	fmt.Printf("[INFO] Inspecting LinkedIn Data Export: %s\n", exportPath)
 
 	contacts, suggestedName, err := linkedin.ParseLinkedInExport(exportPath)
@@ -317,7 +320,10 @@ func handleLinkedInExport(exportPath, senderDomain string, timeout, throttleDela
 	cleanName = strings.ReplaceAll(cleanName, " ", "_")
 	cleanName = strings.ReplaceAll(cleanName, ".", "_")
 	csvFileName := fmt.Sprintf("%s_connections.csv", cleanName)
-	excelFileName := fmt.Sprintf("%s_verified_contacts.xlsx", cleanName)
+	excelFileName := outputPath
+	if excelFileName == "" || excelFileName == "verified_campaign.xlsx" {
+		excelFileName = fmt.Sprintf("%s_verified_contacts.xlsx", cleanName)
+	}
 
 	csvPath, err := csv.SaveConnectionsToCSV(csvFileName, contacts)
 	if err != nil {
